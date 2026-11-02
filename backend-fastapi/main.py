@@ -62,14 +62,26 @@ def init_db() -> None:
               id TEXT PRIMARY KEY, title TEXT, creatorName TEXT, creatorEmail TEXT, salt TEXT, pwHash TEXT,
               mode TEXT, hourStart INTEGER, hourEnd INTEGER, dateStart TEXT, dateEnd TEXT, allowed TEXT,
               showResults INTEGER, showNames INTEGER, notifyMode TEXT, discordWebhook TEXT,
-              finalSlots TEXT DEFAULT '[]', finalNote TEXT DEFAULT '', createdAt TEXT, updatedAt TEXT);
+              finalSlots TEXT DEFAULT '[]', finalNote TEXT DEFAULT '', createdAt TEXT, updatedAt TEXT,
+              extraOpen INTEGER DEFAULT 0);
             CREATE TABLE IF NOT EXISTS participants (
               eventId TEXT, name TEXT, email TEXT, salt TEXT, pwHash TEXT, slots TEXT,
-              createdAt TEXT, updatedAt TEXT, PRIMARY KEY (eventId, name));
+              createdAt TEXT, updatedAt TEXT, extraSlots TEXT DEFAULT '[]', extraAt TEXT DEFAULT '',
+              PRIMARY KEY (eventId, name));
             CREATE TABLE IF NOT EXISTS changes (
               id INTEGER PRIMARY KEY AUTOINCREMENT, eventId TEXT, name TEXT, action TEXT, at TEXT, sent INTEGER DEFAULT 0);
             """
         )
+        # 舊資料庫升級：補上後來新增的欄位（已存在就略過，可重複執行）
+        add_column(con, "events", "extraOpen", "INTEGER DEFAULT 0")
+        add_column(con, "participants", "extraSlots", "TEXT DEFAULT '[]'")
+        add_column(con, "participants", "extraAt", "TEXT DEFAULT ''")
+
+
+def add_column(con: sqlite3.Connection, table: str, col: str, ddl: str) -> None:
+    have = {r["name"] for r in con.execute(f"PRAGMA table_info({table})")}
+    if col not in have:
+        con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
 
 
 # ---------- 工具 ----------
@@ -96,12 +108,15 @@ def row_event(r: sqlite3.Row) -> dict:
     ev["finalSlots"] = json.loads(ev.get("finalSlots") or "[]")
     ev["showResults"] = bool(ev["showResults"])
     ev["showNames"] = bool(ev["showNames"])
+    ev["extraOpen"] = bool(ev.get("extraOpen"))
     return ev
 
 
 def row_part(r: sqlite3.Row) -> dict:
     p = dict(r)
     p["slots"] = json.loads(p.get("slots") or "[]")
+    p["extraSlots"] = json.loads(p.get("extraSlots") or "[]")
+    p["extraAt"] = p.get("extraAt") or ""
     return p
 
 
@@ -116,8 +131,9 @@ def list_parts(con: sqlite3.Connection, eid: str) -> list[dict]:
 
 def save_event(con: sqlite3.Connection, ev: dict, new: bool = False) -> None:
     cols = ["id", "title", "creatorName", "creatorEmail", "salt", "pwHash", "mode", "hourStart", "hourEnd", "dateStart", "dateEnd",
-            "allowed", "showResults", "showNames", "notifyMode", "discordWebhook", "finalSlots", "finalNote", "createdAt", "updatedAt"]
-    vals = [json.dumps(ev[c], ensure_ascii=False) if c in ("allowed", "finalSlots") else int(ev[c]) if c in ("showResults", "showNames") else ev.get(c, "") for c in cols]
+            "allowed", "showResults", "showNames", "notifyMode", "discordWebhook", "finalSlots", "finalNote", "createdAt", "updatedAt", "extraOpen"]
+    vals = [json.dumps(ev[c], ensure_ascii=False) if c in ("allowed", "finalSlots")
+            else int(bool(ev.get(c))) if c in ("showResults", "showNames", "extraOpen") else ev.get(c, "") for c in cols]
     if new:
         con.execute(f"INSERT INTO events ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})", vals)
     else:
@@ -126,16 +142,42 @@ def save_event(con: sqlite3.Connection, ev: dict, new: bool = False) -> None:
 
 def save_part(con: sqlite3.Connection, p: dict, new: bool = False) -> None:
     if new:
-        con.execute("INSERT INTO participants (eventId,name,email,salt,pwHash,slots,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,?)",
-                    (p["eventId"], p["name"], p["email"], p["salt"], p["pwHash"], json.dumps(p["slots"]), p["createdAt"], p["updatedAt"]))
+        con.execute("INSERT INTO participants (eventId,name,email,salt,pwHash,slots,extraSlots,extraAt,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (p["eventId"], p["name"], p["email"], p["salt"], p["pwHash"], json.dumps(p["slots"]),
+                     json.dumps(p.get("extraSlots") or []), p.get("extraAt") or "", p["createdAt"], p["updatedAt"]))
     else:
-        con.execute("UPDATE participants SET email=?, slots=?, updatedAt=? WHERE eventId=? AND name=?",
-                    (p["email"], json.dumps(p["slots"]), p["updatedAt"], p["eventId"], p["name"]))
+        con.execute("UPDATE participants SET email=?, slots=?, extraSlots=?, extraAt=?, updatedAt=? WHERE eventId=? AND name=?",
+                    (p["email"], json.dumps(p["slots"]), json.dumps(p.get("extraSlots") or []), p.get("extraAt") or "", p["updatedAt"], p["eventId"], p["name"]))
 
 
 def public_event(ev: dict) -> dict:
     return {k: ev.get(k) for k in ("id", "title", "creatorName", "mode", "hourStart", "hourEnd", "dateStart", "dateEnd", "allowed",
-                                   "showResults", "showNames", "finalSlots", "finalNote", "createdAt", "updatedAt")}
+                                   "showResults", "showNames", "finalSlots", "finalNote", "extraOpen", "createdAt", "updatedAt")}
+
+
+# ---- 補選（定案後在定案日期內重選）----
+# 補選日期 = 定案時段所在的日期。填寫者有補選紀錄（extraAt 不為空）時，
+# 有效空檔 = 「補選日期以外的原本空檔」+「補選日期內的補選空檔」；原本的 slots 不會被改動。
+def slot_date(s: str) -> str:
+    return str(s).split("|")[0]
+
+
+def final_dates(ev: dict) -> list[str]:
+    return sorted({slot_date(s) for s in (ev.get("finalSlots") or [])})
+
+
+def effective_slots(ev: dict, p: dict) -> list[str]:
+    dates = final_dates(ev)
+    if not p.get("extraAt") or not dates:
+        return p["slots"]
+    allowed = set(ev["allowed"])
+    keep = [s for s in p["slots"] if slot_date(s) not in dates]
+    extra = [s for s in (p.get("extraSlots") or []) if s in allowed and slot_date(s) in dates]
+    return sorted(set(keep + extra))
+
+
+def own_part(p: dict) -> dict:
+    return {"name": p["name"], "email": p.get("email", ""), "slots": p["slots"], "extraSlots": p.get("extraSlots") or [], "extraAt": p.get("extraAt") or ""}
 
 
 def admin_event(ev: dict) -> dict:
@@ -144,12 +186,13 @@ def admin_event(ev: dict) -> dict:
     return out
 
 
-def pub_parts(lst: list[dict], show_names: bool) -> list[dict]:
-    return [{"name": p["name"] if show_names else f"參與者 {i + 1}", "slots": p["slots"]} for i, p in enumerate(lst)]
+def pub_parts(lst: list[dict], show_names: bool, ev: dict) -> list[dict]:
+    return [{"name": p["name"] if show_names else f"參與者 {i + 1}", "slots": effective_slots(ev, p)} for i, p in enumerate(lst)]
 
 
-def admin_parts(lst: list[dict]) -> list[dict]:
-    return [{"name": p["name"], "email": p.get("email", ""), "slots": p["slots"], "createdAt": p["createdAt"], "updatedAt": p["updatedAt"]} for p in lst]
+def admin_parts(lst: list[dict], ev: dict) -> list[dict]:
+    return [{"name": p["name"], "email": p.get("email", ""), "slots": effective_slots(ev, p), "extraSlots": p.get("extraSlots") or [],
+             "extraAt": p.get("extraAt") or "", "createdAt": p["createdAt"], "updatedAt": p["updatedAt"]} for p in lst]
 
 
 def is_date(s: Any) -> bool:
@@ -188,6 +231,8 @@ def validate_event(d: dict) -> str | None:
         return "通知方式不正確"
     if d["notifyMode"] != "none" and not str(d.get("creatorEmail") or "").strip():
         return "要收通知就需要填 email"
+    if d.get("extraOpen") and not d.get("finalSlots"):
+        return "開放補選需要先設定定案時段"
     return None
 
 
@@ -299,7 +344,7 @@ def h_create_event(con, d):
               salt=salt, pwHash=hash_pw(salt, d["password"]), mode=d["mode"], hourStart=int(d["hourStart"]), hourEnd=int(d["hourEnd"]),
               dateStart=d["dateStart"], dateEnd=d["dateEnd"], allowed=sorted(set(map(str, d["allowed"]))), showResults=bool(d.get("showResults")),
               showNames=bool(d.get("showNames")), notifyMode=d["notifyMode"], discordWebhook=str(d.get("discordWebhook") or "").strip(),
-              finalSlots=[], finalNote="", createdAt=now(), updatedAt=now())
+              finalSlots=[], finalNote="", extraOpen=False, createdAt=now(), updatedAt=now())
     save_event(con, ev, new=True)
     return {"ok": True, "id": eid}
 
@@ -311,7 +356,7 @@ def h_get_event(con, d):
     lst = list_parts(con, ev["id"])
     out = {"ok": True, "event": public_event(ev), "participantCount": len(lst)}
     if ev["showResults"]:
-        out["participants"] = pub_parts(lst, ev["showNames"])
+        out["participants"] = pub_parts(lst, ev["showNames"], ev)
     return out
 
 
@@ -329,10 +374,10 @@ def h_join_event(con, d):
     if any(p["name"] == name for p in list_parts(con, ev["id"])):
         return fail("這個名稱已經有人用了；如果是你本人，請改用「修改我的選擇」登入")
     salt = rand_id(16)
-    p = dict(eventId=ev["id"], name=name, email=str(d.get("email") or "").strip(), salt=salt, pwHash=hash_pw(salt, d["password"]), slots=[], createdAt=now(), updatedAt=now())
+    p = dict(eventId=ev["id"], name=name, email=str(d.get("email") or "").strip(), salt=salt, pwHash=hash_pw(salt, d["password"]), slots=[], extraSlots=[], extraAt="", createdAt=now(), updatedAt=now())
     save_part(con, p, new=True)
     notify_change(con, ev, name, "加入了活動")
-    return {"ok": True, "participant": {"name": name, "email": p["email"], "slots": []}}
+    return {"ok": True, "participant": own_part(p)}
 
 
 def _auth_part(con, d):
@@ -350,7 +395,7 @@ def h_login_participant(con, d):
     ev, p, err = _auth_part(con, d)
     if err:
         return err
-    return {"ok": True, "participant": {"name": p["name"], "email": p["email"], "slots": p["slots"]}}
+    return {"ok": True, "participant": own_part(p)}
 
 
 def h_save_slots(con, d):
@@ -364,17 +409,37 @@ def h_save_slots(con, d):
     p["updatedAt"] = now()
     save_part(con, p)
     notify_change(con, ev, p["name"], f"更新了空檔（{len(p['slots'])} 格）")
-    return {"ok": True, "participant": {"name": p["name"], "email": p["email"], "slots": p["slots"]}, "notified": ev["notifyMode"]}
+    return {"ok": True, "participant": own_part(p), "notified": ev["notifyMode"]}
+
+
+def h_save_extra_slots(con, d):
+    ev, p, err = _auth_part(con, d)
+    if err:
+        return err
+    if not ev["extraOpen"]:
+        return fail("主約人目前沒有開放補選")
+    dates = final_dates(ev)
+    if not dates:
+        return fail("尚未設定定案時段")
+    allowed = set(ev["allowed"])
+    p["extraSlots"] = sorted({str(s) for s in (d.get("slots") or []) if str(s) in allowed and slot_date(str(s)) in dates})
+    p["extraAt"] = now()
+    if d.get("email") is not None:
+        p["email"] = str(d["email"]).strip()
+    p["updatedAt"] = now()
+    save_part(con, p)
+    notify_change(con, ev, p["name"], f"補選了空檔（{len(p['extraSlots'])} 格）")
+    return {"ok": True, "participant": own_part(p), "notified": ev["notifyMode"]}
 
 
 def h_admin_login(con, d):
     ev, err = check_admin(con, d)
     if err:
         return err
-    return {"ok": True, "event": admin_event(ev), "participants": admin_parts(list_parts(con, ev["id"]))}
+    return {"ok": True, "event": admin_event(ev), "participants": admin_parts(list_parts(con, ev["id"]), ev)}
 
 
-FIELDS = ["title", "creatorName", "creatorEmail", "mode", "hourStart", "hourEnd", "dateStart", "dateEnd", "allowed", "showResults", "showNames", "notifyMode", "discordWebhook", "finalSlots", "finalNote"]
+FIELDS = ["title", "creatorName", "creatorEmail", "mode", "hourStart", "hourEnd", "dateStart", "dateEnd", "allowed", "showResults", "showNames", "notifyMode", "discordWebhook", "finalSlots", "finalNote", "extraOpen"]
 
 
 def h_admin_update(con, d):
@@ -391,6 +456,7 @@ def h_admin_update(con, d):
     ev["hourStart"], ev["hourEnd"] = int(ev["hourStart"]), int(ev["hourEnd"])
     ev["allowed"] = sorted(set(map(str, ev["allowed"])))
     ev["finalSlots"] = sorted(set(map(str, ev.get("finalSlots") or [])))
+    ev["extraOpen"] = bool(ev.get("extraOpen"))
     if patch.get("newPassword"):
         if len(str(patch["newPassword"])) < 4:
             return fail("密碼至少 4 個字")
@@ -402,11 +468,12 @@ def h_admin_update(con, d):
     stripped = 0
     for p in list_parts(con, ev["id"]):
         after = [s for s in p["slots"] if s in allowed]
-        if len(after) != len(p["slots"]):
-            stripped += len(p["slots"]) - len(after)
-            p["slots"], p["updatedAt"] = after, now()
+        extra_after = [s for s in p["extraSlots"] if s in allowed]
+        if len(after) != len(p["slots"]) or len(extra_after) != len(p["extraSlots"]):
+            stripped += (len(p["slots"]) - len(after)) + (len(p["extraSlots"]) - len(extra_after))
+            p["slots"], p["extraSlots"], p["updatedAt"] = after, extra_after, now()
             save_part(con, p)
-    return {"ok": True, "event": admin_event(ev), "participants": admin_parts(list_parts(con, ev["id"])), "strippedSlots": stripped}
+    return {"ok": True, "event": admin_event(ev), "participants": admin_parts(list_parts(con, ev["id"]), ev), "strippedSlots": stripped}
 
 
 def h_admin_delete_participant(con, d):
@@ -414,7 +481,7 @@ def h_admin_delete_participant(con, d):
     if err:
         return err
     con.execute("DELETE FROM participants WHERE eventId=? AND name=?", (ev["id"], str(d.get("name") or "")))
-    return {"ok": True, "event": admin_event(ev), "participants": admin_parts(list_parts(con, ev["id"]))}
+    return {"ok": True, "event": admin_event(ev), "participants": admin_parts(list_parts(con, ev["id"]), ev)}
 
 
 def h_admin_notify_final(con, d):
@@ -429,6 +496,8 @@ def h_admin_notify_final(con, d):
         body += f"\n\n{ev['finalNote']}"
     if d.get("message"):
         body += f"\n\n{d['message']}"
+    if ev["extraOpen"]:
+        body += "\n\n【開放補選】只限以下日期，請登入填寫頁重新選擇你有空的時段（其他日期原本填寫的紀錄會保留）：\n" + "、".join(final_dates(ev))
     body += f"\n\n查看：{event_link(ev['id'])}"
     for to in emails:
         threading.Thread(target=send_mail, args=(to, f"【約時間】{ev['title']} 已定案", body), daemon=True).start()
@@ -437,7 +506,7 @@ def h_admin_notify_final(con, d):
 
 HANDLERS = {
     "createEvent": h_create_event, "getEvent": h_get_event, "joinEvent": h_join_event, "loginParticipant": h_login_participant,
-    "saveSlots": h_save_slots, "adminLogin": h_admin_login, "adminUpdate": h_admin_update,
+    "saveSlots": h_save_slots, "saveExtraSlots": h_save_extra_slots, "adminLogin": h_admin_login, "adminUpdate": h_admin_update,
     "adminDeleteParticipant": h_admin_delete_participant, "adminNotifyFinal": h_admin_notify_final,
 }
 

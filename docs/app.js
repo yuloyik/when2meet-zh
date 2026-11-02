@@ -58,6 +58,9 @@
   }
   function slotId(date, key) { return `${date}|${key}`; }
   function parseSlot(id) { const [date, key] = id.split('|'); return { date, key }; }
+  // 補選日期 = 定案時段所在的日期；創辦人開放補選且已有定案時，填寫頁進入「補選模式」
+  function finalDates(ev) { return [...new Set((ev.finalSlots || []).map(s => parseSlot(s).date))].sort(); }
+  function inExtraMode(ev) { return !!ev.extraOpen && finalDates(ev).length > 0; }
   function isOff(row) { // 午休 / 下班 → 淡灰
     if (CFG.LUNCH_HOURS.includes(row.start) && row.end - row.start === 1) return true;
     if (row.key === 'noon') return true;
@@ -82,9 +85,9 @@
 
   // ---------- 時間格 ----------
   // opts: { event, selected:Set, allowed:Set|null, heat:Map<slot,string[]>|null, total, finalSet, hlSet,
-  //         interactive, onChange(), onHover(slotId|null), headerToggle }
+  //         interactive, onChange(), onHover(slotId|null), headerToggle, dates?:string[] 只顯示這些日期 }
   function buildGrid(opts) {
-    const ev = opts.event; const dates = listDates(ev.dateStart, ev.dateEnd); const rows = rowsFor(ev);
+    const ev = opts.event; const dates = opts.dates || listDates(ev.dateStart, ev.dateEnd); const rows = rowsFor(ev);
     const grid = el('div', { class: 'grid' + (ev.mode === 'coarse' ? ' coarse' : '') + (opts.heat ? ' heatmode' : '') });
     grid.style.gridTemplateColumns = `auto repeat(${dates.length}, minmax(${ev.mode === 'coarse' ? 72 : 56}px, 1fr))`;
     grid.append(el('div', { class: 'corner' }));
@@ -259,6 +262,7 @@
     const ev = r.event; let others = r.participants || []; let total = r.participantCount || 0;
     const allowed = new Set(ev.allowed);
     let me = null; let session = sess('p:' + id); let selected = new Set(); let showHeat = ev.showResults; let hl = new Set(); let dirty = false;
+    let extraSel = new Set(); // 補選模式下我在定案日期內的選擇（不動原本的 selected / me.slots）
 
     const head = el('div', { class: 'card' },
       el('h1', null, ev.title), ev.creatorName ? el('p', { class: 'muted' }, '主約人：' + ev.creatorName) : null,
@@ -298,13 +302,19 @@
       }
       const rr2 = await api('getEvent', { id });
       if (rr2.ok) { others = rr2.participants || []; total = rr2.participantCount || 0; Object.assign(ev, rr2.event); }
+      if (me) { // 補選的起始選擇：已補選過 → 用補選紀錄；還沒 → 以原本在定案日期內的選擇為底
+        const dates = finalDates(ev); const inDates = s => dates.includes(parseSlot(s).date);
+        extraSel = new Set((me.extraAt ? me.extraSlots : me.slots).filter(inDates));
+      }
     }
     function render() {
       const cntEl = head.querySelector('#cnt'); if (cntEl) cntEl.textContent = String(total);
       const canSeeOthers = ev.showResults;
       const heat = canSeeOthers ? heatFrom(others) : null;
       const info = canSeeOthers ? hoverInfoBox(ev, heat, others) : null;
-      gridHost.replaceChildren(buildGrid({ event: ev, selected: me ? selected : null, allowed, heat: (canSeeOthers && showHeat) ? heat : null, total,
+      const extra = inExtraMode(ev); // 補選模式：只顯示並只能編輯定案日期
+      gridHost.replaceChildren(buildGrid({ event: ev, selected: me ? (extra ? extraSel : selected) : null, allowed, heat: (canSeeOthers && showHeat) ? heat : null, total,
+        dates: extra ? finalDates(ev) : undefined,
         finalSet: new Set(ev.finalSlots || []), hlSet: hl, interactive: !!me, headerToggle: true,
         onChange: () => { dirty = true; saveBtn.disabled = false; }, onHover: info ? sid => info.update(sid) : null }));
       side.replaceChildren();
@@ -317,16 +327,20 @@
     }
     const saveBtn = el('button', { type: 'button', class: 'primary', disabled: true, onclick: async () => {
       saveBtn.disabled = true; saveMsg.replaceChildren();
-      const rr = await api('saveSlots', { id, name: session.name, password: session.password, slots: [...selected], email: myEmailI.value.trim() });
+      const extra = inExtraMode(ev);
+      const rr = await api(extra ? 'saveExtraSlots' : 'saveSlots', { id, name: session.name, password: session.password, slots: [...(extra ? extraSel : selected)], email: myEmailI.value.trim() });
       if (!rr.ok) { saveBtn.disabled = false; return saveMsg.replaceChildren(el('div', { class: 'notice error' }, rr.error)); }
-      dirty = false; toast('已儲存'); await refresh(); render();
+      dirty = false; toast(extra ? '補選已儲存' : '已儲存'); await refresh(); render();
     } }, '儲存我的空檔');
     const heatToggle = el('label', { class: 'toggle' }, el('input', { type: 'checkbox', checked: showHeat, onchange: e => { showHeat = e.target.checked; render(); } }), '疊上大家的空檔');
 
     function mount() {
+      const extra = inExtraMode(ev);
+      saveBtn.textContent = extra ? '儲存補選' : '儲存我的空檔';
       const fillCard = el('div', { class: 'card' },
+        extra ? el('div', { class: 'notice warn' }, el('strong', null, '補選中：'), `主約人已定案，只開放在 ${finalDates(ev).map(fmtDateShort).join('、')} 重新選擇你有空的時段；其他日期原本填寫的紀錄會保留。沒填過的人也可以直接補選。`) : null,
         me ? el('div', { class: 'row', style: 'justify-content:space-between;align-items:center' },
-          el('div', { class: 'grow-0' }, el('strong', null, me.name), el('span', { class: 'muted' }, '　把你有空的時段塗起來（拖曳可連選），然後按儲存。')),
+          el('div', { class: 'grow-0' }, el('strong', null, me.name), el('span', { class: 'muted' }, extra ? '　把這幾天你有空的時段塗起來（拖曳可連選，再點一次可取消），然後按儲存補選。' : '　把你有空的時段塗起來（拖曳可連選），然後按儲存。')),
           el('div', { class: 'grow-0 btn-group' }, ev.showResults ? heatToggle : null, el('button', { type: 'button', class: 'small', onclick: () => { if (dirty && !confirm('尚未儲存，確定登出？')) return; session = null; me = null; sess('p:' + id, null); mount(); } }, '登出')))
           : el('p', { class: 'muted' }, ev.showResults ? '下方是目前大家的空檔，登入後即可填寫自己的。' : '登入後即可填寫。'),
         el('div', { class: 'split' }, el('div', null, gridHost, legend(el('span', null, el('i', { class: 'sw sel' }), '我有空'), ev.showResults ? heatLegend() : null)), side),
@@ -376,7 +390,7 @@
         el('div', { class: 'box' }, el('h3', null, `已填寫（${parts.length}）`),
           el('ul', null, parts.map(p => el('li', { class: hl.size && hl.size === p.slots.length && p.slots.every(s => hl.has(s)) ? 'active' : '', onclick: () => { const same = hl.size === p.slots.length && p.slots.every(s => hl.has(s)); hl = same ? new Set() : new Set(p.slots); renderGrid(); } },
             el('span', null, p.name, p.email ? el('span', { class: 'meta' }, ' · ' + p.email) : null),
-            el('span', { class: 'btn-group' }, el('span', { class: 'meta' }, p.slots.length + ' 格'), el('button', { type: 'button', class: 'small danger', title: '刪除此人', onclick: async e => { e.stopPropagation(); if (!confirm(`確定刪除「${p.name}」的填寫資料？`)) return; await adminCall('adminDeleteParticipant', { name: p.name }, '已刪除'); hl = new Set(); renderGrid(); } }, '✕'))))),
+            el('span', { class: 'btn-group' }, ev.extraOpen ? el('span', { class: 'meta' }, p.extraAt ? '已補選' : '未補選') : null, el('span', { class: 'meta' }, p.slots.length + ' 格'), el('button', { type: 'button', class: 'small danger', title: '刪除此人', onclick: async e => { e.stopPropagation(); if (!confirm(`確定刪除「${p.name}」的填寫資料？`)) return; await adminCall('adminDeleteParticipant', { name: p.name }, '已刪除'); hl = new Set(); renderGrid(); } }, '✕'))))),
           el('small', null, '點名字可標示該人的空檔；✕ 可刪除該人。')));
     }
     const finalBtns = el('div', { class: 'btn-group hidden' },
@@ -392,20 +406,22 @@
     const mk = (key, type, attrs) => (f[key] = el('input', Object.assign({ type, value: ev[key] || '' }, attrs || {})));
     const notifySel = el('select', null, el('option', { value: 'none' }, '不通知'), el('option', { value: 'instant' }, '每次有人填寫 / 修改就寄 email'), el('option', { value: 'daily' }, '每天寄一封摘要 email')); notifySel.value = ev.notifyMode || 'none';
     const showResultsI = el('input', { type: 'checkbox', checked: ev.showResults }); const showNamesI = el('input', { type: 'checkbox', checked: ev.showNames });
+    const extraOpenI = el('input', { type: 'checkbox', checked: !!ev.extraOpen });
     const settingsMsg = el('div');
     const settingsCard = el('div', { class: 'card' }, el('h2', null, '設定'),
       el('form', { onsubmit: async e => {
         e.preventDefault(); settingsMsg.replaceChildren();
-        const patch = { title: f.title.value.trim(), creatorName: f.creatorName.value.trim(), creatorEmail: f.creatorEmail.value.trim(), notifyMode: notifySel.value, discordWebhook: f.discordWebhook.value.trim(), showResults: showResultsI.checked, showNames: showNamesI.checked, finalNote: f.finalNote.value.trim() };
+        const patch = { title: f.title.value.trim(), creatorName: f.creatorName.value.trim(), creatorEmail: f.creatorEmail.value.trim(), notifyMode: notifySel.value, discordWebhook: f.discordWebhook.value.trim(), showResults: showResultsI.checked, showNames: showNamesI.checked, finalNote: f.finalNote.value.trim(), extraOpen: extraOpenI.checked };
         if (f.newPassword.value) patch.newPassword = f.newPassword.value;
         const rr = await adminCall('adminUpdate', { patch }, '設定已儲存');
-        if (!rr.ok) return settingsMsg.replaceChildren(el('div', { class: 'notice error' }, rr.error));
+        if (!rr.ok) { extraOpenI.checked = !!ev.extraOpen; return settingsMsg.replaceChildren(el('div', { class: 'notice error' }, rr.error)); }
         if (patch.newPassword) { session = { password: patch.newPassword }; sess('admin:' + id, session); f.newPassword.value = ''; }
-        titleH.textContent = ev.title; refreshFinalNotice();
+        titleH.textContent = ev.title; renderGrid(); refreshFinalNotice();
       } },
         el('div', { class: 'row' }, el('div', { class: 'field' }, el('label', null, '活動名稱'), mk('title', 'text', { required: true, maxlength: 80 })), el('div', { class: 'field' }, el('label', null, '主約人名稱'), mk('creatorName', 'text', { maxlength: 40 }))),
         el('div', { class: 'row' }, el('div', { class: 'field' }, el('label', null, '創辦人 email'), mk('creatorEmail', 'email')), el('div', { class: 'field' }, el('label', null, '通知方式'), notifySel), el('div', { class: 'field' }, el('label', null, 'Discord Webhook'), mk('discordWebhook', 'text', { placeholder: '選填' }))),
         el('div', { class: 'row' }, el('label', { class: 'toggle' }, showResultsI, '讓填寫者看到大家的交集'), el('label', { class: 'toggle' }, showNamesI, '顯示名單（關掉則填寫者只看到人數）')),
+        el('div', { class: 'row' }, el('label', { class: 'toggle' }, extraOpenI, '開放補選：填寫者只能在「定案時段所在的日期」重新選擇（需先儲存定案時段；其他日期原本的紀錄會保留，關閉後恢復一般填寫）')),
         el('div', { class: 'row' }, el('div', { class: 'field' }, el('label', null, '定案附註（顯示在填寫頁與定案通知）'), mk('finalNote', 'text', { placeholder: '例如：地點在 302 教室' })), el('div', { class: 'field' }, el('label', null, '更改創辦人密碼'), mk('newPassword', 'password', { autocomplete: 'new-password', placeholder: '留空則不變' }))),
         settingsMsg, el('button', { type: 'submit', class: 'primary' }, '儲存設定')));
 
@@ -459,7 +475,8 @@
       finalNotice.replaceChildren(ev.finalSlots && ev.finalSlots.length
         ? el('div', { class: 'notice ok' }, el('strong', null, '目前定案：'), sortSlots(ev, ev.finalSlots).map(s => fmtSlot(ev, s)).join('、'), ev.finalNote ? ` — ${ev.finalNote}` : '')
         : el('div', { class: 'notice' }, '尚未定案。切到上方「選擇定案時段 ★」在格子上點選後儲存。'),
-        el('p', { class: 'muted' }, `已留 email 的填寫者：${emails} / ${parts.length} 人。`));
+        el('p', { class: 'muted' }, `已留 email 的填寫者：${emails} / ${parts.length} 人。`),
+        ev.extraOpen ? el('p', { class: 'muted' }, `補選中（限 ${finalDates(ev).map(fmtDateShort).join('、')}）：已補選 ${parts.filter(p => p.extraAt).length} / ${parts.length} 人。定案通知會附上補選說明。`) : null);
     }
     const notifyCard = el('div', { class: 'card' }, el('h2', null, '定案與通知'), finalNotice,
       el('div', { class: 'field' }, el('label', null, '通知內容'), notifyMsgI),

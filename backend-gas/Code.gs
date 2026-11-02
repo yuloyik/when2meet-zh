@@ -13,9 +13,10 @@ const EVENT_SHEET = 'events';
 const PART_SHEET = 'participants';
 const CHANGE_SHEET = 'changes';
 
+// 新增欄位一律加在最右邊（readAll_ 依位置讀取）；舊工作表會在第一次使用時自動補上欄位標題，見 ensureColumns_
 const EVENT_COLS = ['id', 'title', 'creatorName', 'creatorEmail', 'salt', 'pwHash', 'mode', 'hourStart', 'hourEnd', 'dateStart', 'dateEnd',
-  'allowed', 'showResults', 'showNames', 'notifyMode', 'discordWebhook', 'finalSlots', 'finalNote', 'createdAt', 'updatedAt'];
-const PART_COLS = ['eventId', 'name', 'email', 'salt', 'pwHash', 'slots', 'createdAt', 'updatedAt'];
+  'allowed', 'showResults', 'showNames', 'notifyMode', 'discordWebhook', 'finalSlots', 'finalNote', 'createdAt', 'updatedAt', 'extraOpen'];
+const PART_COLS = ['eventId', 'name', 'email', 'salt', 'pwHash', 'slots', 'createdAt', 'updatedAt', 'extraSlots', 'extraAt'];
 const CHANGE_COLS = ['eventId', 'name', 'action', 'at', 'sent'];
 
 // ---------- 入口 ----------
@@ -56,7 +57,16 @@ function ensureSheet_(ss, name, cols) {
   let sh = ss.getSheetByName(name);
   if (!sh) { sh = ss.insertSheet(name); }
   if (sh.getLastRow() === 0) { sh.appendRow(cols); sh.setFrozenRows(1); }
+  else ensureColumns_(sh, cols);
 }
+/** 舊版工作表欄位比現在少時（例如升級前建立的），在最右邊補上欄位標題；既有資料不動 */
+function ensureColumns_(sh, cols) {
+  const have = sh.getLastColumn();
+  if (have >= cols.length) return;
+  if (sh.getMaxColumns() < cols.length) sh.insertColumnsAfter(sh.getMaxColumns(), cols.length - sh.getMaxColumns());
+  sh.getRange(1, have + 1, 1, cols.length - have).setValues([cols.slice(have)]);
+}
+function colsOf_(name) { return name === EVENT_SHEET ? EVENT_COLS : name === PART_SHEET ? PART_COLS : CHANGE_COLS; }
 
 // ---------- 試算表存取 ----------
 /** 取得資料試算表：優先用指令碼屬性 SPREADSHEET_ID，否則用綁定的試算表 */
@@ -66,10 +76,12 @@ function ss_() {
   if (!ss) throw new Error('找不到資料試算表：請在「專案設定 → 指令碼屬性」新增 SPREADSHEET_ID（試算表網址 /d/ 後面那串）');
   return ss;
 }
+const checkedSheets_ = {};      // 每次請求每張工作表只檢查一次欄位
 function sheet_(name) {
   const ss = ss_();
   let sh = ss.getSheetByName(name);
-  if (!sh) { const cols = name === EVENT_SHEET ? EVENT_COLS : name === PART_SHEET ? PART_COLS : CHANGE_COLS; ensureSheet_(ss, name, cols); sh = ss.getSheetByName(name); }
+  if (!sh) { ensureSheet_(ss, name, colsOf_(name)); sh = ss.getSheetByName(name); }
+  if (!checkedSheets_[name]) { ensureColumns_(sh, colsOf_(name)); checkedSheets_[name] = true; }
   return sh;
 }
 function readAll_(name, cols) {
@@ -89,14 +101,15 @@ function parseEvent_(r) {
     allowed: jsonArr_(r.allowed), finalSlots: jsonArr_(r.finalSlots),
     showResults: r.showResults === true || r.showResults === 'TRUE' || r.showResults === 'true',
     showNames: r.showNames === true || r.showNames === 'TRUE' || r.showNames === 'true',
+    extraOpen: r.extraOpen === true || r.extraOpen === 'TRUE' || r.extraOpen === 'true',
     dateStart: dateStr_(r.dateStart), dateEnd: dateStr_(r.dateEnd), title: String(r.title), creatorName: String(r.creatorName || ''),
   });
 }
-function parseParticipant_(r) { return Object.assign({}, r, { slots: jsonArr_(r.slots), name: String(r.name), email: String(r.email || '') }); }
+function parseParticipant_(r) { return Object.assign({}, r, { slots: jsonArr_(r.slots), extraSlots: jsonArr_(r.extraSlots), extraAt: String(r.extraAt || ''), name: String(r.name), email: String(r.email || '') }); }
 function jsonArr_(v) { try { const a = JSON.parse(v || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
 function dateStr_(v) { if (v instanceof Date) return Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd'); return String(v); }
-function serializeEvent_(ev) { return Object.assign({}, ev, { allowed: JSON.stringify(ev.allowed), finalSlots: JSON.stringify(ev.finalSlots || []), showResults: ev.showResults ? 'TRUE' : 'FALSE', showNames: ev.showNames ? 'TRUE' : 'FALSE' }); }
-function serializeParticipant_(p) { return Object.assign({}, p, { slots: JSON.stringify(p.slots) }); }
+function serializeEvent_(ev) { return Object.assign({}, ev, { allowed: JSON.stringify(ev.allowed), finalSlots: JSON.stringify(ev.finalSlots || []), showResults: ev.showResults ? 'TRUE' : 'FALSE', showNames: ev.showNames ? 'TRUE' : 'FALSE', extraOpen: ev.extraOpen ? 'TRUE' : 'FALSE' }); }
+function serializeParticipant_(p) { return Object.assign({}, p, { slots: JSON.stringify(p.slots), extraSlots: JSON.stringify(p.extraSlots || []) }); }
 function findEvent_(id) { const r = readAll_(EVENT_SHEET, EVENT_COLS).find(x => String(x.id) === String(id)); return r ? parseEvent_(r) : null; }
 function listParticipants_(id) { return readAll_(PART_SHEET, PART_COLS).filter(x => String(x.eventId) === String(id)).map(parseParticipant_); }
 
@@ -112,11 +125,27 @@ function fail_(msg) { return { ok: false, error: msg }; }
 function uniq_(arr) { return Array.from(new Set(arr)); }
 function publicEvent_(ev) {
   return { id: ev.id, title: ev.title, creatorName: ev.creatorName, mode: ev.mode, hourStart: ev.hourStart, hourEnd: ev.hourEnd, dateStart: ev.dateStart, dateEnd: ev.dateEnd,
-    allowed: ev.allowed, showResults: ev.showResults, showNames: ev.showNames, finalSlots: ev.finalSlots || [], finalNote: String(ev.finalNote || ''), createdAt: ev.createdAt, updatedAt: ev.updatedAt };
+    allowed: ev.allowed, showResults: ev.showResults, showNames: ev.showNames, finalSlots: ev.finalSlots || [], finalNote: String(ev.finalNote || ''), extraOpen: !!ev.extraOpen,
+    createdAt: ev.createdAt, updatedAt: ev.updatedAt };
 }
 function adminEvent_(ev) { return Object.assign(publicEvent_(ev), { creatorEmail: String(ev.creatorEmail || ''), notifyMode: ev.notifyMode, discordWebhook: String(ev.discordWebhook || '') }); }
-function pubParticipants_(list, showNames) { return list.map((p, i) => ({ name: showNames ? p.name : ('參與者 ' + (i + 1)), slots: p.slots })); }
-function adminParticipants_(list) { return list.map(p => ({ name: p.name, email: p.email, slots: p.slots, createdAt: p.createdAt, updatedAt: p.updatedAt })); }
+
+// ---- 補選（定案後在定案日期內重選）----
+// 補選日期 = 定案時段所在的日期。填寫者有補選紀錄（extraAt 不為空）時，
+// 有效空檔 = 「補選日期以外的原本空檔」+「補選日期內的補選空檔」；原本的 slots 不會被改動。
+function slotDate_(s) { return String(s).split('|')[0]; }
+function finalDates_(ev) { return uniq_((ev.finalSlots || []).map(slotDate_)).sort(); }
+function effectiveSlots_(ev, p) {
+  const dates = finalDates_(ev);
+  if (!p.extraAt || !dates.length) return p.slots;
+  const allowed = new Set(ev.allowed);
+  const keep = p.slots.filter(s => dates.indexOf(slotDate_(s)) < 0);
+  const extra = (p.extraSlots || []).filter(s => allowed.has(s) && dates.indexOf(slotDate_(s)) >= 0);
+  return uniq_(keep.concat(extra)).sort();
+}
+function ownParticipant_(p) { return { name: p.name, email: p.email, slots: p.slots, extraSlots: p.extraSlots || [], extraAt: p.extraAt || '' }; }
+function pubParticipants_(list, showNames, ev) { return list.map((p, i) => ({ name: showNames ? p.name : ('參與者 ' + (i + 1)), slots: effectiveSlots_(ev, p) })); }
+function adminParticipants_(list, ev) { return list.map(p => ({ name: p.name, email: p.email, slots: effectiveSlots_(ev, p), extraSlots: p.extraSlots || [], extraAt: p.extraAt || '', createdAt: p.createdAt, updatedAt: p.updatedAt })); }
 function validateEvent_(d) {
   if (!d.title || String(d.title).trim().length === 0) return '請輸入活動名稱'; if (String(d.title).length > 80) return '活動名稱太長';
   if (['hour', 'coarse'].indexOf(d.mode) < 0) return '時間刻度不正確';
@@ -127,6 +156,7 @@ function validateEvent_(d) {
   if (!Array.isArray(d.allowed)) return '可選時段格式不正確'; if (d.allowed.length === 0) return '請至少勾選一個可選時段';
   if (['none', 'instant', 'daily'].indexOf(d.notifyMode) < 0) return '通知方式不正確';
   if (d.notifyMode !== 'none' && !d.creatorEmail) return '要收通知就需要填 email';
+  if (d.extraOpen && !(d.finalSlots && d.finalSlots.length)) return '開放補選需要先設定定案時段';
   return null;
 }
 function checkAdmin_(d) { const ev = findEvent_(d.id); if (!ev) return [null, fail_('找不到這個活動')]; if (ev.pwHash !== hashPw_(ev.salt, d.password || '')) return [null, fail_('創辦人密碼不正確')]; return [ev, null]; }
@@ -141,7 +171,7 @@ const HANDLERS = {
     const salt = randId_(16);
     const ev = { id: id, title: String(d.title).trim(), creatorName: String(d.creatorName || '').trim(), creatorEmail: String(d.creatorEmail || '').trim(), salt: salt, pwHash: hashPw_(salt, d.password),
       mode: d.mode, hourStart: Number(d.hourStart), hourEnd: Number(d.hourEnd), dateStart: d.dateStart, dateEnd: d.dateEnd, allowed: uniq_(d.allowed), showResults: !!d.showResults, showNames: !!d.showNames,
-      notifyMode: d.notifyMode, discordWebhook: String(d.discordWebhook || '').trim(), finalSlots: [], finalNote: '', createdAt: now_(), updatedAt: now_() };
+      notifyMode: d.notifyMode, discordWebhook: String(d.discordWebhook || '').trim(), finalSlots: [], finalNote: '', extraOpen: false, createdAt: now_(), updatedAt: now_() };
     writeRow_(EVENT_SHEET, EVENT_COLS, null, serializeEvent_(ev));
     return { ok: true, id: id };
   },
@@ -149,7 +179,7 @@ const HANDLERS = {
     const ev = findEvent_(d.id); if (!ev) return fail_('找不到這個活動');
     const list = listParticipants_(d.id);
     const out = { ok: true, event: publicEvent_(ev), participantCount: list.length };
-    if (ev.showResults) out.participants = pubParticipants_(list, ev.showNames);
+    if (ev.showResults) out.participants = pubParticipants_(list, ev.showNames, ev);
     return out;
   },
   joinEvent: function (d) {
@@ -159,16 +189,16 @@ const HANDLERS = {
     if (!d.password || d.password.length < 4) return fail_('密碼至少 4 個字');
     if (listParticipants_(d.id).some(p => p.name === name)) return fail_('這個名稱已經有人用了；如果是你本人，請改用「修改我的選擇」登入');
     const salt = randId_(16);
-    const p = { eventId: ev.id, name: name, email: String(d.email || '').trim(), salt: salt, pwHash: hashPw_(salt, d.password), slots: [], createdAt: now_(), updatedAt: now_() };
+    const p = { eventId: ev.id, name: name, email: String(d.email || '').trim(), salt: salt, pwHash: hashPw_(salt, d.password), slots: [], extraSlots: [], extraAt: '', createdAt: now_(), updatedAt: now_() };
     writeRow_(PART_SHEET, PART_COLS, null, serializeParticipant_(p));
     notifyChange_(ev, name, '加入了活動');
-    return { ok: true, participant: { name: p.name, email: p.email, slots: [] } };
+    return { ok: true, participant: ownParticipant_(p) };
   },
   loginParticipant: function (d) {
     const ev = findEvent_(d.id); if (!ev) return fail_('找不到這個活動');
     const p = listParticipants_(d.id).find(x => x.name === String(d.name || '').trim());
     if (!p || p.pwHash !== hashPw_(p.salt, d.password || '')) return fail_('名稱或密碼不正確');
-    return { ok: true, participant: { name: p.name, email: p.email, slots: p.slots } };
+    return { ok: true, participant: ownParticipant_(p) };
   },
   saveSlots: function (d) {
     const ev = findEvent_(d.id); if (!ev) return fail_('找不到這個活動');
@@ -180,38 +210,59 @@ const HANDLERS = {
     p.updatedAt = now_();
     writeRow_(PART_SHEET, PART_COLS, p._row, serializeParticipant_(p));
     notifyChange_(ev, p.name, '更新了空檔（' + p.slots.length + ' 格）');
-    return { ok: true, participant: { name: p.name, email: p.email, slots: p.slots }, notified: ev.notifyMode };
+    return { ok: true, participant: ownParticipant_(p), notified: ev.notifyMode };
+  },
+  saveExtraSlots: function (d) {
+    const ev = findEvent_(d.id); if (!ev) return fail_('找不到這個活動');
+    const p = listParticipants_(d.id).find(x => x.name === String(d.name || '').trim());
+    if (!p || p.pwHash !== hashPw_(p.salt, d.password || '')) return fail_('名稱或密碼不正確');
+    if (!ev.extraOpen) return fail_('主約人目前沒有開放補選');
+    const dates = finalDates_(ev);
+    if (!dates.length) return fail_('尚未設定定案時段');
+    const allowed = new Set(ev.allowed);
+    p.extraSlots = uniq_((d.slots || []).filter(s => allowed.has(s) && dates.indexOf(slotDate_(s)) >= 0));
+    p.extraAt = now_();
+    if (d.email !== undefined) p.email = String(d.email).trim();
+    p.updatedAt = now_();
+    writeRow_(PART_SHEET, PART_COLS, p._row, serializeParticipant_(p));
+    notifyChange_(ev, p.name, '補選了空檔（' + p.extraSlots.length + ' 格）');
+    return { ok: true, participant: ownParticipant_(p), notified: ev.notifyMode };
   },
   adminLogin: function (d) {
     const [ev, err] = checkAdmin_(d); if (err) return err;
-    return { ok: true, event: adminEvent_(ev), participants: adminParticipants_(listParticipants_(d.id)) };
+    return { ok: true, event: adminEvent_(ev), participants: adminParticipants_(listParticipants_(d.id), ev) };
   },
   adminUpdate: function (d) {
     const [ev, err] = checkAdmin_(d); if (err) return err;
     const patch = d.patch || {};
-    const fields = ['title', 'creatorName', 'creatorEmail', 'mode', 'hourStart', 'hourEnd', 'dateStart', 'dateEnd', 'allowed', 'showResults', 'showNames', 'notifyMode', 'discordWebhook', 'finalSlots', 'finalNote'];
+    const fields = ['title', 'creatorName', 'creatorEmail', 'mode', 'hourStart', 'hourEnd', 'dateStart', 'dateEnd', 'allowed', 'showResults', 'showNames', 'notifyMode', 'discordWebhook', 'finalSlots', 'finalNote', 'extraOpen'];
     const merged = Object.assign({}, ev); fields.forEach(f => { if (patch[f] !== undefined) merged[f] = patch[f]; });
     const verr = validateEvent_(merged); if (verr) return fail_(verr);
     fields.forEach(f => { if (patch[f] !== undefined) ev[f] = patch[f]; });
-    ev.hourStart = Number(ev.hourStart); ev.hourEnd = Number(ev.hourEnd); ev.allowed = uniq_(ev.allowed);
+    ev.hourStart = Number(ev.hourStart); ev.hourEnd = Number(ev.hourEnd); ev.allowed = uniq_(ev.allowed); ev.extraOpen = !!ev.extraOpen;
     if (patch.newPassword) { if (String(patch.newPassword).length < 4) return fail_('密碼至少 4 個字'); ev.salt = randId_(16); ev.pwHash = hashPw_(ev.salt, patch.newPassword); }
     ev.updatedAt = now_();
     writeRow_(EVENT_SHEET, EVENT_COLS, ev._row, serializeEvent_(ev));
     const allowed = new Set(ev.allowed); let stripped = 0;
-    listParticipants_(d.id).forEach(p => { const before = p.slots.length; const after = p.slots.filter(s => allowed.has(s)); if (after.length !== before) { stripped += before - after.length; p.slots = after; p.updatedAt = now_(); writeRow_(PART_SHEET, PART_COLS, p._row, serializeParticipant_(p)); } });
-    return { ok: true, event: adminEvent_(ev), participants: adminParticipants_(listParticipants_(d.id)), strippedSlots: stripped };
+    listParticipants_(d.id).forEach(p => {
+      const before = p.slots.length; const after = p.slots.filter(s => allowed.has(s));
+      const eBefore = p.extraSlots.length; const eAfter = p.extraSlots.filter(s => allowed.has(s));
+      if (after.length !== before || eAfter.length !== eBefore) { stripped += (before - after.length) + (eBefore - eAfter.length); p.slots = after; p.extraSlots = eAfter; p.updatedAt = now_(); writeRow_(PART_SHEET, PART_COLS, p._row, serializeParticipant_(p)); }
+    });
+    return { ok: true, event: adminEvent_(ev), participants: adminParticipants_(listParticipants_(d.id), ev), strippedSlots: stripped };
   },
   adminDeleteParticipant: function (d) {
     const [ev, err] = checkAdmin_(d); if (err) return err;
     const p = listParticipants_(d.id).find(x => x.name === String(d.name || ''));
     if (p) deleteRow_(PART_SHEET, p._row);
-    return { ok: true, event: adminEvent_(ev), participants: adminParticipants_(listParticipants_(d.id)) };
+    return { ok: true, event: adminEvent_(ev), participants: adminParticipants_(listParticipants_(d.id), ev) };
   },
   adminNotifyFinal: function (d) {
     const [ev, err] = checkAdmin_(d); if (err) return err;
     if (!ev.finalSlots || !ev.finalSlots.length) return fail_('尚未設定定案時段');
     const emails = listParticipants_(d.id).map(p => p.email).filter(Boolean);
-    const body = '「' + ev.title + '」已定案：\n\n' + ev.finalSlots.map(fmtSlot_).join('\n') + (ev.finalNote ? '\n\n' + ev.finalNote : '') + (d.message ? '\n\n' + d.message : '') + '\n\n查看：' + eventLink_(ev.id);
+    const extraNote = ev.extraOpen ? '\n\n【開放補選】只限以下日期，請登入填寫頁重新選擇你有空的時段（其他日期原本填寫的紀錄會保留）：\n' + finalDates_(ev).join('、') : '';
+    const body = '「' + ev.title + '」已定案：\n\n' + ev.finalSlots.map(fmtSlot_).join('\n') + (ev.finalNote ? '\n\n' + ev.finalNote : '') + (d.message ? '\n\n' + d.message : '') + extraNote + '\n\n查看：' + eventLink_(ev.id);
     emails.forEach(to => { try { MailApp.sendEmail({ to: to, subject: '【約時間】' + ev.title + ' 已定案', body: body, name: '約時間' }); } catch (e) { Logger.log('寄信失敗 ' + to + ': ' + e.message); } });
     return { ok: true, sent: emails.length };
   },
