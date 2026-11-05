@@ -11,7 +11,7 @@ window.APP_CONFIG = {
   // 後端網址：
   //   GAS：     'https://script.google.com/macros/s/XXXXXXXX/exec'
   //   FastAPI： 由 FastAPI 直接服務前端時填 '/api'；前端放 GitHub Pages、後端另架時填完整網址，例如 'https://meet.example.com/api'
-  API_BASE: 'https://script.google.com/macros/s/AKfycby49TvoLo5LBKxswGKtJRQb2-50K3ZZU_5LE-iLjTrf6HGZd-S04JE9anH7FtLDXH8R/exec',
+  API_BASE: 'https://script.google.com/macros/s/AKfycbw8tKaUQGcXiiaXxhJLL4TMkGF4B1zA7LjGP70BO5oSrfPRMsZ28PQm_qUGDE4iXn45/exec',
 
   // GitHub repo 網址（頁尾連結，選填）
   REPO_URL: 'https://github.com/yuloyik/when2meet-zh',
