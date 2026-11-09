@@ -147,3 +147,4 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .toast.show { opacity: .95; }
 .notice.announce { background: #FFFBEA; border-color: #F1E3A6; }
 .announce-body { white-space: pre-wrap; word-break: break-word; margin-top: 4px; }
+.p-note { display: block; font-size: 12px; color: #6B5B2E; white-space: pre-wrap; word-break: break-word; margin-top: 2px; }

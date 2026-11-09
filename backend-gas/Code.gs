@@ -33,7 +33,7 @@ const CHANGE_SHEET = 'changes';
 const EVENT_COLS = ['id', 'title', 'creatorName', 'creatorEmail', 'salt', 'pwHash', 'mode', 'hourStart', 'hourEnd', 'dateStart', 'dateEnd',
   'allowed', 'showResults', 'showNames', 'notifyMode', 'discordWebhook', 'finalSlots', 'finalNote', 'createdAt', 'updatedAt', 'extraOpen', 'description', 'descriptionAt'];
 // [ participants ] 填寫者欄位
-const PART_COLS = ['eventId', 'name', 'email', 'salt', 'pwHash', 'slots', 'createdAt', 'updatedAt', 'extraSlots', 'extraAt'];
+const PART_COLS = ['eventId', 'name', 'email', 'salt', 'pwHash', 'slots', 'createdAt', 'updatedAt', 'extraSlots', 'extraAt', 'note'];
 // [ changes ] 每日摘要的待寄異動
 const CHANGE_COLS = ['eventId', 'name', 'action', 'at', 'sent'];
 
@@ -150,7 +150,7 @@ function parseEvent_(r) {
   });
 }
 // 資料列 → 填寫者物件
-function parseParticipant_(r) { return Object.assign({}, r, { slots: jsonArr_(r.slots), extraSlots: jsonArr_(r.extraSlots), extraAt: String(r.extraAt || ''), name: String(r.name), email: String(r.email || '') }); }
+function parseParticipant_(r) { return Object.assign({}, r, { slots: jsonArr_(r.slots), extraSlots: jsonArr_(r.extraSlots), extraAt: String(r.extraAt || ''), note: descStr_(r.note), name: String(r.name), email: String(r.email || '') }); }
 // 說明欄：存成 JSON 字串 ( 避免換行 / 開頭是 = 時被試算表當成公式 )，讀出時還原
 function descStr_(v) { if (v === '' || v === undefined || v === null) return ''; try { const s = JSON.parse(v); return typeof s === 'string' ? s : String(v); } catch (e) { return String(v); } }
 // JSON 文字 → 陣列 ( 失敗就回傳空陣列 )
@@ -159,7 +159,7 @@ function jsonArr_(v) { try { const a = JSON.parse(v || '[]'); return Array.isArr
 function dateStr_(v) { if (v instanceof Date) return Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd'); return String(v); }
 // 物件 → 儲存格格式 ( 陣列轉 JSON 文字、布林轉 TRUE / FALSE )
 function serializeEvent_(ev) { return Object.assign({}, ev, { allowed: JSON.stringify(ev.allowed), finalSlots: JSON.stringify(ev.finalSlots || []), showResults: ev.showResults ? 'TRUE' : 'FALSE', showNames: ev.showNames ? 'TRUE' : 'FALSE', extraOpen: ev.extraOpen ? 'TRUE' : 'FALSE', description: JSON.stringify(String(ev.description || '')) }); }
-function serializeParticipant_(p) { return Object.assign({}, p, { slots: JSON.stringify(p.slots), extraSlots: JSON.stringify(p.extraSlots || []) }); }
+function serializeParticipant_(p) { return Object.assign({}, p, { slots: JSON.stringify(p.slots), extraSlots: JSON.stringify(p.extraSlots || []), note: JSON.stringify(String(p.note || '')) }); }
 // 依 ID 找活動
 function findEvent_(id) { const r = readAll_(EVENT_SHEET, EVENT_COLS).find(x => String(x.id) === String(id)); return r ? parseEvent_(r) : null; }
 // 取得活動的所有填寫者
@@ -228,11 +228,11 @@ function effectiveSlots_(ev, p) {
 // #region // 填寫者資訊
 
 // 填寫者自己看到的資料 ( 原本的 slots，不含補選合併 )
-function ownParticipant_(p) { return { name: p.name, email: p.email, slots: p.slots, extraSlots: p.extraSlots || [], extraAt: p.extraAt || '' }; }
+function ownParticipant_(p) { return { name: p.name, email: p.email, slots: p.slots, extraSlots: p.extraSlots || [], extraAt: p.extraAt || '', note: p.note || '' }; }
 // [ Public ] 顯示填寫者清單 ( 關閉名單時顯示「參與者 N」，空檔為有效空檔 )
 function pubParticipants_(list, showNames, ev) { return list.map((p, i) => ({ name: showNames ? p.name : ('參與者 ' + (i + 1)), slots: effectiveSlots_(ev, p) })); }
 // [ Admin ] 顯示填寫者清單 ( 含 email、補選紀錄 )
-function adminParticipants_(list, ev) { return list.map(p => ({ name: p.name, email: p.email, slots: effectiveSlots_(ev, p), extraSlots: p.extraSlots || [], extraAt: p.extraAt || '', createdAt: p.createdAt, updatedAt: p.updatedAt })); }
+function adminParticipants_(list, ev) { return list.map(p => ({ name: p.name, email: p.email, slots: effectiveSlots_(ev, p), extraSlots: p.extraSlots || [], extraAt: p.extraAt || '', note: p.note || '', createdAt: p.createdAt, updatedAt: p.updatedAt })); }
 
 
 // #endregion //
@@ -299,7 +299,7 @@ const HANDLERS = {
     if (!d.password || d.password.length < 4) return fail_('密碼至少需要 4 個字元');
     if (listParticipants_(d.id).some(p => p.name === name)) return fail_('這個名稱已經有人用了；如果是你本人，請改用「修改我的選擇」登入');
     const salt = randId_(16);
-    const p = { eventId: ev.id, name: name, email: String(d.email || '').trim(), salt: salt, pwHash: hashPw_(salt, d.password), slots: [], extraSlots: [], extraAt: '', createdAt: now_(), updatedAt: now_() };
+    const p = { eventId: ev.id, name: name, email: String(d.email || '').trim(), salt: salt, pwHash: hashPw_(salt, d.password), slots: [], extraSlots: [], extraAt: '', note: '', createdAt: now_(), updatedAt: now_() };
     writeRow_(PART_SHEET, PART_COLS, null, serializeParticipant_(p));
     notifyChange_(ev, name, '加入了活動');
     return { ok: true, participant: ownParticipant_(p) };
@@ -319,6 +319,7 @@ const HANDLERS = {
     const allowed = new Set(ev.allowed);
     p.slots = uniq_((d.slots || []).filter(s => allowed.has(s)));
     if (d.email !== undefined) p.email = String(d.email).trim();
+    if (d.note !== undefined) { const n = String(d.note).trim(); if (n.length > 500) return fail_('備註太長（最多 500 字）'); p.note = n; }
     p.updatedAt = now_();
     writeRow_(PART_SHEET, PART_COLS, p._row, serializeParticipant_(p));
     notifyChange_(ev, p.name, '更新了空檔（' + p.slots.length + ' 格）');
@@ -336,6 +337,7 @@ const HANDLERS = {
     p.extraSlots = uniq_((d.slots || []).filter(s => allowed.has(s) && dates.indexOf(slotDate_(s)) >= 0));
     p.extraAt = now_();
     if (d.email !== undefined) p.email = String(d.email).trim();
+    if (d.note !== undefined) { const n = String(d.note).trim(); if (n.length > 500) return fail_('備註太長（最多 500 字）'); p.note = n; }
     p.updatedAt = now_();
     writeRow_(PART_SHEET, PART_COLS, p._row, serializeParticipant_(p));
     notifyChange_(ev, p.name, '補選了空檔（' + p.extraSlots.length + ' 格）');

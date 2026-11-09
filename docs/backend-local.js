@@ -113,7 +113,7 @@
   // #region // 填寫者資訊
 
   function ownParticipant(p) {
-    return { name: p.name, email: p.email || '', slots: p.slots, extraSlots: p.extraSlots || [], extraAt: p.extraAt || '' };
+    return { name: p.name, email: p.email || '', slots: p.slots, extraSlots: p.extraSlots || [], extraAt: p.extraAt || '', note: p.note || '' };
   }
 
   function pubParticipants(list, showNames, ev) {
@@ -121,7 +121,7 @@
   }
 
   function adminParticipants(list, ev) {
-    return list.map(p => ({ name: p.name, email: p.email || '', slots: effectiveSlots(ev, p), extraSlots: p.extraSlots || [], extraAt: p.extraAt || '', createdAt: p.createdAt, updatedAt: p.updatedAt }));
+    return list.map(p => ({ name: p.name, email: p.email || '', slots: effectiveSlots(ev, p), extraSlots: p.extraSlots || [], extraAt: p.extraAt || '', note: p.note || '', createdAt: p.createdAt, updatedAt: p.updatedAt }));
   }
 
   // #endregion //
@@ -213,7 +213,7 @@
 
       const salt = randId(16);
 
-      const p = { name, email: (d.email || '').trim(), salt, pwHash: await hashPw(salt, d.password), slots: [], extraSlots: [], extraAt: '', createdAt: now(), updatedAt: now() };
+      const p = { name, email: (d.email || '').trim(), salt, pwHash: await hashPw(salt, d.password), slots: [], extraSlots: [], extraAt: '', note: '', createdAt: now(), updatedAt: now() };
       list.push(p); save(db);
 
       return { ok: true, participant: ownParticipant(p) };
@@ -238,6 +238,7 @@
       const allowed = new Set(ev.allowed);
       p.slots = Array.from(new Set((d.slots || []).filter(s => allowed.has(s))));
       if (d.email !== undefined) p.email = String(d.email).trim();
+      if (d.note !== undefined) { const n = String(d.note).trim(); if (n.length > 500) return fail('備註太長（最多 500 字）'); p.note = n; }
       p.updatedAt = now(); save(db);
 
       // NOTE : 真實後端會在這裡寄送通知 ( 示範模式僅會記錄資訊 )
@@ -266,6 +267,7 @@
 
       p.extraAt = now();
       if (d.email !== undefined) p.email = String(d.email).trim();
+      if (d.note !== undefined) { const n = String(d.note).trim(); if (n.length > 500) return fail('備註太長（最多 500 字）'); p.note = n; }
 
       p.updatedAt = now(); save(db);
 

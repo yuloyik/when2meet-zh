@@ -92,7 +92,7 @@ def init_db() -> None:
               extraOpen INTEGER DEFAULT 0, description TEXT DEFAULT '', descriptionAt TEXT DEFAULT '');
             CREATE TABLE IF NOT EXISTS participants (
               eventId TEXT, name TEXT, email TEXT, salt TEXT, pwHash TEXT, slots TEXT,
-              createdAt TEXT, updatedAt TEXT, extraSlots TEXT DEFAULT '[]', extraAt TEXT DEFAULT '',
+              createdAt TEXT, updatedAt TEXT, extraSlots TEXT DEFAULT '[]', extraAt TEXT DEFAULT '', note TEXT DEFAULT '',
               PRIMARY KEY (eventId, name));
             CREATE TABLE IF NOT EXISTS changes (
               id INTEGER PRIMARY KEY AUTOINCREMENT, eventId TEXT, name TEXT, action TEXT, at TEXT, sent INTEGER DEFAULT 0);
@@ -104,6 +104,7 @@ def init_db() -> None:
         add_column(con, "events", "descriptionAt", "TEXT DEFAULT ''")
         add_column(con, "participants", "extraSlots", "TEXT DEFAULT '[]'")
         add_column(con, "participants", "extraAt", "TEXT DEFAULT ''")
+        add_column(con, "participants", "note", "TEXT DEFAULT ''")
 
 
 # 補欄位 ( 舊資料庫升級用 )
@@ -167,6 +168,7 @@ def row_part(r: sqlite3.Row) -> dict:
     p["slots"] = json.loads(p.get("slots") or "[]")
     p["extraSlots"] = json.loads(p.get("extraSlots") or "[]")
     p["extraAt"] = p.get("extraAt") or ""
+    p["note"] = p.get("note") or ""
     return p
 
 
@@ -196,12 +198,12 @@ def save_event(con: sqlite3.Connection, ev: dict, new: bool = False) -> None:
 # 儲存填寫者 ( new=True 新增，否則更新 )
 def save_part(con: sqlite3.Connection, p: dict, new: bool = False) -> None:
     if new:
-        con.execute("INSERT INTO participants (eventId,name,email,salt,pwHash,slots,extraSlots,extraAt,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        con.execute("INSERT INTO participants (eventId,name,email,salt,pwHash,slots,extraSlots,extraAt,note,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     (p["eventId"], p["name"], p["email"], p["salt"], p["pwHash"], json.dumps(p["slots"]),
-                     json.dumps(p.get("extraSlots") or []), p.get("extraAt") or "", p["createdAt"], p["updatedAt"]))
+                     json.dumps(p.get("extraSlots") or []), p.get("extraAt") or "", p.get("note") or "", p["createdAt"], p["updatedAt"]))
     else:
-        con.execute("UPDATE participants SET email=?, slots=?, extraSlots=?, extraAt=?, updatedAt=? WHERE eventId=? AND name=?",
-                    (p["email"], json.dumps(p["slots"]), json.dumps(p.get("extraSlots") or []), p.get("extraAt") or "", p["updatedAt"], p["eventId"], p["name"]))
+        con.execute("UPDATE participants SET email=?, slots=?, extraSlots=?, extraAt=?, note=?, updatedAt=? WHERE eventId=? AND name=?",
+                    (p["email"], json.dumps(p["slots"]), json.dumps(p.get("extraSlots") or []), p.get("extraAt") or "", p.get("note") or "", p["updatedAt"], p["eventId"], p["name"]))
 
 
 # endregion //
@@ -246,7 +248,7 @@ def effective_slots(ev: dict, p: dict) -> list[str]:
 
 # 填寫者自己看到的資料 ( 原本的 slots，不含補選合併 )
 def own_part(p: dict) -> dict:
-    return {"name": p["name"], "email": p.get("email", ""), "slots": p["slots"], "extraSlots": p.get("extraSlots") or [], "extraAt": p.get("extraAt") or ""}
+    return {"name": p["name"], "email": p.get("email", ""), "slots": p["slots"], "extraSlots": p.get("extraSlots") or [], "extraAt": p.get("extraAt") or "", "note": p.get("note") or ""}
 
 
 # [ Admin ] 顯示管理員欄位
@@ -264,7 +266,7 @@ def pub_parts(lst: list[dict], show_names: bool, ev: dict) -> list[dict]:
 # [ Admin ] 顯示填寫者清單 ( 含 email、補選紀錄 )
 def admin_parts(lst: list[dict], ev: dict) -> list[dict]:
     return [{"name": p["name"], "email": p.get("email", ""), "slots": effective_slots(ev, p), "extraSlots": p.get("extraSlots") or [],
-             "extraAt": p.get("extraAt") or "", "createdAt": p["createdAt"], "updatedAt": p["updatedAt"]} for p in lst]
+             "extraAt": p.get("extraAt") or "", "note": p.get("note") or "", "createdAt": p["createdAt"], "updatedAt": p["updatedAt"]} for p in lst]
 
 
 # endregion //
@@ -487,7 +489,7 @@ def h_join_event(con, d):
     if any(p["name"] == name for p in list_parts(con, ev["id"])):
         return fail("這個名稱已經有人用了；如果是你本人，請改用「修改我的選擇」登入")
     salt = rand_id(16)
-    p = dict(eventId=ev["id"], name=name, email=str(d.get("email") or "").strip(), salt=salt, pwHash=hash_pw(salt, d["password"]), slots=[], extraSlots=[], extraAt="", createdAt=now(), updatedAt=now())
+    p = dict(eventId=ev["id"], name=name, email=str(d.get("email") or "").strip(), salt=salt, pwHash=hash_pw(salt, d["password"]), slots=[], extraSlots=[], extraAt="", note="", createdAt=now(), updatedAt=now())
     save_part(con, p, new=True)
     notify_change(con, ev, name, "加入了活動")
     return {"ok": True, "participant": own_part(p)}
@@ -522,6 +524,11 @@ def h_save_slots(con, d):
     p["slots"] = sorted({str(s) for s in (d.get("slots") or []) if str(s) in allowed})
     if d.get("email") is not None:
         p["email"] = str(d["email"]).strip()
+    if d.get("note") is not None:
+        note = str(d["note"]).strip()
+        if len(note) > 500:
+            return fail("備註太長（最多 500 字）")
+        p["note"] = note
     p["updatedAt"] = now()
     save_part(con, p)
     # NOTE : 在這裡寄送通知 ( 真實後端；示範模式僅記錄 )
@@ -544,6 +551,11 @@ def h_save_extra_slots(con, d):
     p["extraAt"] = now()
     if d.get("email") is not None:
         p["email"] = str(d["email"]).strip()
+    if d.get("note") is not None:
+        note = str(d["note"]).strip()
+        if len(note) > 500:
+            return fail("備註太長（最多 500 字）")
+        p["note"] = note
     p["updatedAt"] = now()
     save_part(con, p)
     notify_change(con, ev, p["name"], f"補選了空檔（{len(p['extraSlots'])} 格）")

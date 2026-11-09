@@ -402,11 +402,12 @@
 
     const gridHost = el('div'); const side = el('div', { class: 'side' }); const saveMsg = el('div');
     const myEmailI = el('input', { type: 'email', placeholder: '選填' });
+    const myNoteI = el('textarea', { maxlength: 500, placeholder: '例如：我只有 12/03 上午可以；或需要提早離開…（選填）', oninput: () => { dirty = true; saveBtn.disabled = false; } });
 
     async function refresh() {
       if (session) {
         const rr = await api('loginParticipant', { id, name: session.name, password: session.password });
-        if (rr.ok) { me = rr.participant; selected = new Set(me.slots); myEmailI.value = me.email || ''; }
+        if (rr.ok) { me = rr.participant; selected = new Set(me.slots); myEmailI.value = me.email || ''; myNoteI.value = me.note || ''; }
         else { session = null; sess('p:' + id, null); me = null; }
       }
       const rr2 = await api('getEvent', { id });
@@ -437,7 +438,7 @@
     const saveBtn = el('button', { type: 'button', class: 'primary', disabled: true, onclick: async () => {
       saveBtn.disabled = true; saveMsg.replaceChildren();
       const extra = inExtraMode(ev);
-      const rr = await api(extra ? 'saveExtraSlots' : 'saveSlots', { id, name: session.name, password: session.password, slots: [...(extra ? extraSel : selected)], email: myEmailI.value.trim() });
+      const rr = await api(extra ? 'saveExtraSlots' : 'saveSlots', { id, name: session.name, password: session.password, slots: [...(extra ? extraSel : selected)], email: myEmailI.value.trim(), note: myNoteI.value.trim() });
       if (!rr.ok) { saveBtn.disabled = false; return saveMsg.replaceChildren(el('div', { class: 'notice error' }, rr.error)); }
       dirty = false; toast(extra ? '補選已儲存' : '已儲存'); await refresh(); render();
     } }, '儲存我的空檔');
@@ -453,6 +454,7 @@
           el('div', { class: 'grow-0 btn-group' }, ev.showResults ? heatToggle : null, el('button', { type: 'button', class: 'small', onclick: () => { if (dirty && !confirm('尚未儲存，確定登出？')) return; session = null; me = null; sess('p:' + id, null); mount(); } }, '登出')))
           : el('p', { class: 'muted' }, ev.showResults ? '下方是目前大家的空檔，登入後即可填寫自己的。' : '登入後即可填寫。'),
         el('div', { class: 'split' }, el('div', null, gridHost, legend(el('span', null, el('i', { class: 'sw sel' }), '我有空'), ev.showResults ? heatLegend() : null)), side),
+        me ? el('div', { class: 'field', style: 'margin-top:14px' }, el('label', null, '備註：其他時間需求（選填，只有主約人看得到）'), myNoteI) : null,
         me ? el('div', { class: 'row', style: 'margin-top:14px' }, el('div', { class: 'field' }, el('label', null, '我的 email（選填，定案時通知我）'), myEmailI), el('div', { class: 'grow-0 btn-group' }, saveBtn)) : null, saveMsg);
       app.replaceChildren(...[head, me ? null : loginCard, fillCard].filter(Boolean));
       render();
@@ -500,7 +502,7 @@
         el('div', { class: 'box' }, el('h3', null, '最多人有空的時段'), topSlots(ev, heat, parts.length, 8)),
         el('div', { class: 'box' }, el('h3', null, `已填寫（${parts.length}）`),
           el('ul', null, parts.map(p => el('li', { class: hl.size && hl.size === p.slots.length && p.slots.every(s => hl.has(s)) ? 'active' : '', onclick: () => { const same = hl.size === p.slots.length && p.slots.every(s => hl.has(s)); hl = same ? new Set() : new Set(p.slots); renderGrid(); } },
-            el('span', null, p.name, p.email ? el('span', { class: 'meta' }, ' · ' + p.email) : null),
+            el('span', null, p.name, p.email ? el('span', { class: 'meta' }, ' · ' + p.email) : null, p.note ? el('span', { class: 'p-note' }, '📝 ' + p.note) : null),
             el('span', { class: 'btn-group' }, ev.extraOpen ? el('span', { class: 'meta' }, p.extraAt ? '已補選' : '未補選') : null, el('span', { class: 'meta' }, p.slots.length + ' 格'), el('button', { type: 'button', class: 'small danger', title: '刪除此人', onclick: async e => { e.stopPropagation(); if (!confirm(`確定刪除「${p.name}」的填寫資料？`)) return; await adminCall('adminDeleteParticipant', { name: p.name }, '已刪除'); hl = new Set(); renderGrid(); } }, '✕'))))),
           el('small', null, '點名字可標示該人的空檔；✕ 可刪除該人。')));
     }

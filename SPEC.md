@@ -39,7 +39,7 @@
 
 **event**：`id, title, creatorName, creatorEmail, salt, pwHash, mode('hour'|'coarse'), hourStart, hourEnd, dateStart, dateEnd, allowed[], showResults, showNames, notifyMode('none'|'instant'|'daily'), discordWebhook, finalSlots[], finalNote, createdAt, updatedAt, extraOpen, description, descriptionAt`
 
-**participant**：`eventId, name(活動內唯一), email, salt, pwHash, slots[], createdAt, updatedAt, extraSlots[], extraAt`
+**participant**：`eventId, name(活動內唯一), email, salt, pwHash, slots[], createdAt, updatedAt, extraSlots[], extraAt, note`
 
 **change**（每日摘要佇列）：`eventId, name, action, at, sent`
 
@@ -58,16 +58,18 @@
 |---|---|---|
 | `createEvent` | event 欄位（不含 id/salt/pwHash）+ `password` | `{ok, id}` |
 | `getEvent` | `id` | `{ok, event(公開欄位), participantCount, participants?}`，`participants` 僅在 `showResults` 時回傳，`showNames=false` 時名稱改為「參與者 N」 |
-| `joinEvent` | `id, name, password, email?` | `{ok, participant:{name,email,slots,extraSlots,extraAt}}`；名稱重複則錯誤 |
+| `joinEvent` | `id, name, password, email?` | `{ok, participant:{name,email,slots,extraSlots,extraAt,note}}`；名稱重複則錯誤 |
 | `loginParticipant` | `id, name, password` | 同上（`slots` 是原本的選擇，不含補選合併） |
-| `saveSlots` | `id, name, password, slots[], email?` | `{ok, participant, notified}`；slots 會被過濾成 allowed 子集合；觸發通知 |
-| `saveExtraSlots` | `id, name, password, slots[], email?` | `{ok, participant, notified}`；需 `extraOpen` 且已有定案時段（否則「主約人目前沒有開放補選」/「尚未設定定案時段」）；`slots` 會被過濾成 allowed ∩ 補選日期，整份覆蓋 `extraSlots`，更新 `extraAt`；觸發通知（「補選了空檔」） |
-| `adminLogin` | `id, password` | `{ok, event(含 creatorEmail/notifyMode/discordWebhook), participants:[{name,email,slots(有效空檔),extraSlots,extraAt,createdAt,updatedAt}]}` |
+| `saveSlots` | `id, name, password, slots[], email?, note?` | `{ok, participant, notified}`；slots 會被過濾成 allowed 子集合；觸發通知 |
+| `saveExtraSlots` | `id, name, password, slots[], email?, note?` | `{ok, participant, notified}`；需 `extraOpen` 且已有定案時段（否則「主約人目前沒有開放補選」/「尚未設定定案時段」）；`slots` 會被過濾成 allowed ∩ 補選日期，整份覆蓋 `extraSlots`，更新 `extraAt`；觸發通知（「補選了空檔」） |
+| `adminLogin` | `id, password` | `{ok, event(含 creatorEmail/notifyMode/discordWebhook), participants:[{name,email,slots(有效空檔),extraSlots,extraAt,note,createdAt,updatedAt}]}` |
 | `adminUpdate` | `id, password, patch{任意 event 欄位（含 extraOpen）, newPassword?}` | 同 adminLogin + `strippedSlots`（含被移除的 `extraSlots`） |
 | `adminDeleteParticipant` | `id, password, name` | 同 adminLogin |
 | `adminNotifyFinal` | `id, password, message?` | `{ok, sent}`；寄給有留 email 的填寫者 |
 
 公開欄位：`id, title, creatorName, mode, hourStart, hourEnd, dateStart, dateEnd, allowed, showResults, showNames, finalSlots, finalNote, extraOpen, description, descriptionAt, createdAt, updatedAt`。
+
+**填寫者備註（其他時間需求）**：`note` 純文字、≤ 500 字（錯誤訊息：「備註太長（最多 500 字）」），填寫者隨 `saveSlots` / `saveExtraSlots` 一併儲存（有傳才更新，傳空字串即清空）；只出現在填寫者自己的回傳與 `adminLogin` / `adminUpdate` 的名單，**不會**出現在 `getEvent` 的公開名單。後台名單在姓名下方顯示。GAS 以 JSON 字串存入儲存格。
 
 **說明欄（公告）**：`description` 純文字、≤ 1000 字（錯誤訊息：「說明太長（最多 1000 字）」），可在建立活動或 `adminUpdate` 時設定；內容有變動時後端更新 `descriptionAt`（清空則為空字串）。填寫頁在標題下方顯示，並每 60 秒 / 切回分頁時重抓 `getEvent` 以取得最新公告。GAS 以 JSON 字串存入儲存格（避免被當成公式）。
 
