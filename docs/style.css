@@ -145,3 +145,5 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .summary-top ol { margin: 4px 0 0 1.2em; padding: 0; }
 .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--text); color: #fff; padding: 10px 18px; border-radius: 999px; font-size: .9rem; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 99; }
 .toast.show { opacity: .95; }
+.notice.announce { background: #FFFBEA; border-color: #F1E3A6; }
+.announce-body { white-space: pre-wrap; word-break: break-word; margin-top: 4px; }

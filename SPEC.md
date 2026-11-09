@@ -37,7 +37,7 @@
 
 ## 4. 資料欄位
 
-**event**：`id, title, creatorName, creatorEmail, salt, pwHash, mode('hour'|'coarse'), hourStart, hourEnd, dateStart, dateEnd, allowed[], showResults, showNames, notifyMode('none'|'instant'|'daily'), discordWebhook, finalSlots[], finalNote, createdAt, updatedAt, extraOpen`
+**event**：`id, title, creatorName, creatorEmail, salt, pwHash, mode('hour'|'coarse'), hourStart, hourEnd, dateStart, dateEnd, allowed[], showResults, showNames, notifyMode('none'|'instant'|'daily'), discordWebhook, finalSlots[], finalNote, createdAt, updatedAt, extraOpen, description, descriptionAt`
 
 **participant**：`eventId, name(活動內唯一), email, salt, pwHash, slots[], createdAt, updatedAt, extraSlots[], extraAt`
 
@@ -67,7 +67,9 @@
 | `adminDeleteParticipant` | `id, password, name` | 同 adminLogin |
 | `adminNotifyFinal` | `id, password, message?` | `{ok, sent}`；寄給有留 email 的填寫者 |
 
-公開欄位：`id, title, creatorName, mode, hourStart, hourEnd, dateStart, dateEnd, allowed, showResults, showNames, finalSlots, finalNote, extraOpen, createdAt, updatedAt`。
+公開欄位：`id, title, creatorName, mode, hourStart, hourEnd, dateStart, dateEnd, allowed, showResults, showNames, finalSlots, finalNote, extraOpen, description, descriptionAt, createdAt, updatedAt`。
+
+**說明欄（公告）**：`description` 純文字、≤ 1000 字（錯誤訊息：「說明太長（最多 1000 字）」），可在建立活動或 `adminUpdate` 時設定；內容有變動時後端更新 `descriptionAt`（清空則為空字串）。填寫頁在標題下方顯示，並每 60 秒 / 切回分頁時重抓 `getEvent` 以取得最新公告。GAS 以 JSON 字串存入儲存格（避免被當成公式）。
 
 ## 6. 通知
 

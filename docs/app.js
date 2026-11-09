@@ -5,119 +5,196 @@
          #/e/<id>/admin  創辦人後台
    ============================================================ */
 (function () {
+
   'use strict';
   const CFG = window.APP_CONFIG || {};
   const app = document.getElementById('app');
   let HOLIDAYS = {};
   const DOW = ['日', '一', '二', '三', '四', '五', '六'];
 
-  // ---------- 後端呼叫 ----------
+
+  // #region // 後端呼叫
   async function api(action, payload) {
+
+    // 示範模式
     if (CFG.BACKEND === 'local') return window.LocalBackend(action, payload);
+
+    // API_BASE
     if (!CFG.API_BASE) return { ok: false, error: '尚未設定 API_BASE（請編輯 config.js）' };
+
     try {
       const res = await fetch(CFG.API_BASE, {
+
         method: 'POST', redirect: 'follow',
-        // 用 text/plain 送 JSON：避免瀏覽器預檢 (preflight)，GAS 與 FastAPI 都能接
+
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        // NOTE : 用 text/plain 送 JSON：避免瀏覽器預檢 (preflight)，GAS 與 FastAPI 都能接
+
         body: JSON.stringify(Object.assign({ action }, payload || {})),
+
       });
+
       const text = await res.text();
       try { return JSON.parse(text); } catch (e) { return { ok: false, error: '後端回應不是 JSON：' + text.slice(0, 120) }; }
     } catch (e) { return { ok: false, error: '連線失敗：' + e.message }; }
+
   }
 
-  // ---------- 小工具 ----------
+  // #endregion //
+
+
+  // #region // 小工具
+  // NOTE : 使用純文字處理 ( 取代 innerHTML ) 以避免惡意程式碼 XSS
+
   function el(tag, attrs, ...children) {
+
     const n = document.createElement(tag);
+
     if (attrs) for (const [k, v] of Object.entries(attrs)) {
+
       if (k === 'class') n.className = v;
       else if (k === 'html') n.innerHTML = v;
       else if (k.startsWith('on') && typeof v === 'function') n.addEventListener(k.slice(2).toLowerCase(), v);
       else if (v !== undefined && v !== null && v !== false) n.setAttribute(k, v === true ? '' : v);
+
     }
+
     for (const c of children.flat()) if (c !== null && c !== undefined && c !== false) n.append(c instanceof Node ? c : document.createTextNode(String(c)));
     return n;
+
   }
+
+  // 跳出短暫提示 ( 右下角 )
   function toast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(t._tm); t._tm = setTimeout(() => t.classList.remove('show'), 2200); }
+  
+  // 複製到剪貼簿
   async function copyText(text) { try { await navigator.clipboard.writeText(text); toast('已複製'); } catch (e) { prompt('請手動複製：', text); } }
+  
+  // 補零 ( EX : 8 → 08 )
   function pad2(n) { return String(n).padStart(2, '0'); }
+  
+  // 今日日期字串
   function todayStr(offset = 0) { const d = new Date(); d.setDate(d.getDate() + offset); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; }
+  
+  // 產生日期 ( 上限 200 天 )
   function listDates(a, b) {
     const out = []; const d = new Date(a + 'T00:00:00'); const end = new Date(b + 'T00:00:00');
     while (d <= end && out.length < 200) { out.push(`${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`); d.setDate(d.getDate() + 1); }
     return out;
   }
+
   function dowOf(date) { return new Date(date + 'T00:00:00').getDay(); }
+
+  // 休息日判定
   function isRest(date) { const w = dowOf(date); return w === 0 || w === 6 || !!HOLIDAYS[date]; }
+
   function holidayName(date) { return HOLIDAYS[date] || ''; }
+
+  // 清單條列
   function rowsFor(ev) {
     if (ev.mode === 'coarse') return CFG.COARSE_BLOCKS.map(b => ({ key: b.key, label: `${b.label} ${pad2(b.start)}–${pad2(b.end)}`, short: b.label, start: b.start, end: b.end }));
     const rows = []; for (let h = ev.hourStart; h < ev.hourEnd; h++) rows.push({ key: pad2(h), label: `${pad2(h)}:00`, short: `${pad2(h)}:00`, start: h, end: h + 1 });
     return rows;
   }
+
+  // 日期 & 時段
   function slotId(date, key) { return `${date}|${key}`; }
+
   function parseSlot(id) { const [date, key] = id.split('|'); return { date, key }; }
-  // 補選日期 = 定案時段所在的日期；創辦人開放補選且已有定案時，填寫頁進入「補選模式」
+
+  // 補選日期 ( 創辦人開放補選且已有定案時，填寫頁進入「補選模式」)
   function finalDates(ev) { return [...new Set((ev.finalSlots || []).map(s => parseSlot(s).date))].sort(); }
   function inExtraMode(ev) { return !!ev.extraOpen && finalDates(ev).length > 0; }
-  function isOff(row) { // 午休 / 下班 → 淡灰
+
+  // 午休 / 下班時間判定 ( 淡灰色 )
+  function isOff(row) {
     if (CFG.LUNCH_HOURS.includes(row.start) && row.end - row.start === 1) return true;
     if (row.key === 'noon') return true;
     return row.start < CFG.WORK_START || row.start >= CFG.WORK_END;
   }
+
+  // 日期格式轉化 ( 自然語言 )
   function fmtDateShort(date) { const [, m, d] = date.split('-'); return `${Number(m)}/${Number(d)} (${DOW[dowOf(date)]})`; }
   function fmtSlot(ev, id) {
     const { date, key } = parseSlot(id); const row = rowsFor(ev).find(r => r.key === key);
     if (!row) return `${fmtDateShort(date)} ${key}`;
     return ev.mode === 'coarse' ? `${fmtDateShort(date)} ${row.short} ${pad2(row.start)}:00–${pad2(row.end)}:00` : `${fmtDateShort(date)} ${pad2(row.start)}:00–${pad2(row.end)}:00`;
   }
+
+  // 依據日期、時段排序
   function slotSortKey(ev, id) { const { date, key } = parseSlot(id); const row = rowsFor(ev).find(r => r.key === key); return `${date}|${pad2(row ? row.start : 99)}`; }
   function sortSlots(ev, arr) { return [...arr].sort((a, b) => slotSortKey(ev, a).localeCompare(slotSortKey(ev, b))); }
+  
+  // 填寫連結 & 後臺連結
   function eventUrl(id) { return location.origin + location.pathname + '#/e/' + id; }
   function adminUrl(id) { return eventUrl(id) + '/admin'; }
+  
   function sess(key, val) { if (val === undefined) { try { return JSON.parse(sessionStorage.getItem(key)); } catch (e) { return null; } } if (val === null) sessionStorage.removeItem(key); else sessionStorage.setItem(key, JSON.stringify(val)); }
+  
+  // 預設開放
   function defaultAllowed(ev) {
     const out = [];
     for (const date of listDates(ev.dateStart, ev.dateEnd)) { if (isRest(date)) continue; for (const r of rowsFor(ev)) { if (isOff(r)) continue; out.push(slotId(date, r.key)); } }
     return out;
   }
 
-  // ---------- 時間格 ----------
+  // #endregion //
+
+
+  // #region // 時間欄位建置
+
   // opts: { event, selected:Set, allowed:Set|null, heat:Map<slot,string[]>|null, total, finalSet, hlSet,
   //         interactive, onChange(), onHover(slotId|null), headerToggle, dates?:string[] 只顯示這些日期 }
+
   function buildGrid(opts) {
+
     const ev = opts.event; const dates = opts.dates || listDates(ev.dateStart, ev.dateEnd); const rows = rowsFor(ev);
     const grid = el('div', { class: 'grid' + (ev.mode === 'coarse' ? ' coarse' : '') + (opts.heat ? ' heatmode' : '') });
+
     grid.style.gridTemplateColumns = `auto repeat(${dates.length}, minmax(${ev.mode === 'coarse' ? 72 : 56}px, 1fr))`;
     grid.append(el('div', { class: 'corner' }));
+
     for (const date of dates) {
+
       const rest = isRest(date);
       const h = el('div', { class: 'dhead' + (rest ? ' rest' : ''), 'data-date': date },
         el('div', null, date.slice(5).replace('-', '/')), el('div', { class: 'dow' }, '週' + DOW[dowOf(date)]),
         holidayName(date) ? el('span', { class: 'hol' }, holidayName(date)) : null);
+
       grid.append(h);
+
     }
+
     const cells = new Map();
+
     for (const row of rows) {
+
       grid.append(el('div', { class: 'rhead' }, row.label));
+
       for (const date of dates) {
+
         const id = slotId(date, row.key);
         const blocked = opts.allowed && !opts.allowed.has(id);
         const c = el('div', { class: 'cell' + (isRest(date) ? ' rest' : isOff(row) ? ' off' : '') + (blocked ? ' blocked' : ''), 'data-id': id });
+
         if (opts.heat && !blocked) {
           const n = (opts.heat.get(id) || []).length; const total = opts.total || 0;
           if (n > 0) { const op = total ? Math.max(0.15, 0.15 + 0.8 * (n / total)) : 0.3; c.append(el('div', { class: 'heat', style: `opacity:${op.toFixed(2)}` })); c.append(el('div', { class: 'cnt' }, String(n))); }
         }
+
         if (opts.selected && opts.selected.has(id)) c.classList.add('sel');
         if (opts.finalSet && opts.finalSet.has(id)) c.classList.add('final');
         if (opts.hlSet && opts.hlSet.has(id)) c.classList.add('hl');
+
         cells.set(id, c); grid.append(c);
       }
+
     }
+
     // hover
     grid.addEventListener('pointerover', e => { const c = e.target.closest('.cell'); if (opts.onHover) opts.onHover(c ? c.dataset.id : null); });
     grid.addEventListener('pointerleave', () => opts.onHover && opts.onHover(null));
+
     // header click → 整欄切換
     if (opts.interactive && opts.headerToggle) grid.addEventListener('click', e => {
       const h = e.target.closest('.dhead'); if (!h) return; const date = h.dataset.date;
@@ -126,6 +203,7 @@
       for (const id of ids) { if (allOn) opts.selected.delete(id); else opts.selected.add(id); cells.get(id).classList.toggle('sel', !allOn); }
       opts.onChange && opts.onChange();
     });
+
     // 拖曳塗選
     if (opts.interactive) {
       let paint = null;
@@ -140,6 +218,7 @@
     }
     return el('div', { class: 'grid-wrap' }, grid);
   }
+
   function legend(extra) {
     return el('div', { class: 'legend' },
       el('span', null, el('i', { class: 'sw rest' }), '週末 / 國定假日（可選，僅提示）'),
@@ -147,9 +226,11 @@
       el('span', null, el('i', { class: 'sw blocked' }), '創辦人未開放'),
       extra || null);
   }
+
   function heatLegend() { return el('span', null, el('span', { class: 'heatbar' }, [0.15, 0.35, 0.55, 0.75, 0.95].map(o => el('i', { style: `opacity:${o}` }))), ' 有空人數少 → 多'); }
 
   function heatFrom(participants) { const m = new Map(); for (const p of participants) for (const s of p.slots) { if (!m.has(s)) m.set(s, []); m.get(s).push(p.name); } return m; }
+  
   function hoverInfoBox(ev, heat, participants, allNames) {
     const box = el('div', { class: 'hover-info muted' }, '把滑鼠移到格子上，看看誰有空。');
     return { node: box, update(id) {
@@ -160,18 +241,29 @@
         el('div', { class: 'names' }, names.map(n => el('span', { class: yes.includes(n) ? '' : 'no' }, n))));
     } };
   }
+
   function topSlots(ev, heat, total, n = 5) {
     const arr = [...heat.entries()].filter(([, v]) => v.length > 0).sort((a, b) => b[1].length - a[1].length || slotSortKey(ev, a[0]).localeCompare(slotSortKey(ev, b[0]))).slice(0, n);
     if (!arr.length) return el('p', { class: 'muted' }, '還沒有人填寫。');
     return el('ol', null, arr.map(([id, v]) => el('li', null, `${fmtSlot(ev, id)} — ${v.length}/${total} 人`)));
   }
 
-  // ============================================================
-  //  畫面：建立活動
-  // ============================================================
+  // #endregion //
+
+
+
+  // 說明欄 / 公告（填寫頁與後台預覽共用）
+  function fmtStamp(iso) { const t = new Date(iso); return isNaN(t) ? '' : t.toLocaleString('zh-TW', { hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }); }
+  function announceBox(ev) {
+    if (!ev.description) return null;
+    return el('div', { class: 'notice announce' }, el('strong', null, '📢 公告'), ev.descriptionAt ? el('span', { class: 'meta' }, '　更新於 ' + fmtStamp(ev.descriptionAt)) : null, el('div', { class: 'announce-body' }, ev.description));
+  }
+
+  // #region // < 頁面 > 建立活動
+
   function viewNew() {
     const st = { title: '', creatorName: '', creatorEmail: '', password: '', password2: '', dateStart: todayStr(1), dateEnd: todayStr(14),
-      mode: 'hour', hourStart: CFG.DEFAULT_HOUR_START, hourEnd: CFG.DEFAULT_HOUR_END, showResults: true, showNames: true, notifyMode: 'none', discordWebhook: '' };
+      mode: 'hour', hourStart: CFG.DEFAULT_HOUR_START, hourEnd: CFG.DEFAULT_HOUR_END, showResults: true, showNames: true, notifyMode: 'none', discordWebhook: '', description: '' };
     let selected = new Set(defaultAllowed(st));
     let gridHost = el('div'); let msg = el('div');
 
@@ -229,7 +321,8 @@
         el('div', { class: 'row' },
           field('創辦人密碼 *', inp('password', 'password', { required: true, minlength: 4, autocomplete: 'new-password' }), '只用在這個活動的後台，與其他帳號無關'),
           field('再輸入一次 *', inp('password2', 'password', { required: true, minlength: 4, autocomplete: 'new-password' }))),
-        emailField),
+        emailField,
+        field('說明 / 公告（選填）', el('textarea', { maxlength: 1000, placeholder: '例如：評圖地點、注意事項、截止時間…', oninput: e => { st.description = e.target.value; } }), '填寫者打開頁面就會看到；建立後可在後台隨時修改。')),
       el('div', { class: 'card' },
         el('h2', null, '2. 時間範圍'),
         el('div', { class: 'row' },
@@ -252,9 +345,11 @@
     rebuildGrid(true);
   }
 
-  // ============================================================
-  //  畫面：填寫頁
-  // ============================================================
+  // #endregion //
+
+
+  // #region // < 頁面 > 填寫畫面
+
   async function viewEvent(id) {
     app.replaceChildren(el('p', { class: 'muted' }, '載入中…'));
     const r = await api('getEvent', { id });
@@ -264,9 +359,23 @@
     let me = null; let session = sess('p:' + id); let selected = new Set(); let showHeat = ev.showResults; let hl = new Set(); let dirty = false;
     let extraSel = new Set(); // 補選模式下我在定案日期內的選擇（不動原本的 selected / me.slots）
 
+    // 說明欄：每 60 秒與切回分頁時重新抓一次，讓填寫者看到最新公告
+    const announceHost = el('div');
+    const renderAnnounce = () => announceHost.replaceChildren(...[announceBox(ev)].filter(Boolean));
+    renderAnnounce();
+    const annTimer = setInterval(() => pollAnnounce(), 60000);
+    const onVisible = () => { if (!document.hidden) pollAnnounce(); };
+    document.addEventListener('visibilitychange', onVisible);
+    async function pollAnnounce() {
+      if (!announceHost.isConnected) { clearInterval(annTimer); document.removeEventListener('visibilitychange', onVisible); return; }
+      const rr = await api('getEvent', { id });
+      if (rr.ok && (rr.event.description !== ev.description || rr.event.descriptionAt !== ev.descriptionAt)) { ev.description = rr.event.description || ''; ev.descriptionAt = rr.event.descriptionAt || ''; renderAnnounce(); }
+    }
+
     const head = el('div', { class: 'card' },
       el('h1', null, ev.title), ev.creatorName ? el('p', { class: 'muted' }, '主約人：' + ev.creatorName) : null,
       el('p', { class: 'muted' }, `${ev.dateStart} ～ ${ev.dateEnd}　·　目前 `, el('strong', { id: 'cnt' }, String(total)), ' 人已填寫'),
+      announceHost,
       ev.finalSlots && ev.finalSlots.length ? el('div', { class: 'notice ok' }, el('strong', null, '★ 已定案：'), sortSlots(ev, ev.finalSlots).map(fmtSlot.bind(null, ev)).join('、'), ev.finalNote ? el('div', null, ev.finalNote) : null) : null,
       el('div', { class: 'linkbox' }, el('input', { type: 'text', readonly: true, value: eventUrl(id) }), el('button', { type: 'button', onclick: () => copyText(eventUrl(id)) }, '複製連結')));
 
@@ -352,9 +461,11 @@
     window.addEventListener('beforeunload', e => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
   }
 
-  // ============================================================
-  //  畫面：創辦人後台
-  // ============================================================
+  // #endregion //
+
+
+  // #region // < 頁面 > 管理員後台
+
   async function viewAdmin(id) {
     app.replaceChildren(el('p', { class: 'muted' }, '載入中…'));
     let session = sess('admin:' + id); let data = null;
@@ -400,6 +511,19 @@
       el('button', { type: 'button', class: 'active', onclick: e => { viewMode = 'heat'; segActivate(e); renderGrid(); } }, '查看交集'),
       el('button', { type: 'button', onclick: e => { viewMode = 'final'; segActivate(e); renderGrid(); } }, '選擇定案時段 ★'));
     function segActivate(e) { [...e.currentTarget.parentNode.children].forEach(b => b.classList.remove('active')); e.currentTarget.classList.add('active'); }
+
+    // ---- 說明欄（公告）----
+    const descI = el('textarea', { maxlength: 1000, placeholder: '例如：評圖地點、注意事項、截止時間…（留空則填寫頁不顯示）' }, ev.description || '');
+    const descPreview = el('div'); const descStamp = el('span', { class: 'meta' });
+    function refreshDesc() { descStamp.textContent = ev.descriptionAt ? '目前公告更新於 ' + fmtStamp(ev.descriptionAt) : '目前沒有公告'; descPreview.replaceChildren(...[announceBox(ev)].filter(Boolean)); }
+    const descCard = el('div', { class: 'card' }, el('h2', null, '說明欄（公告）'),
+      el('p', { class: 'muted' }, '填寫者打開填寫頁就會看到，儲存後他們的頁面會在 1 分鐘內（或切回分頁時）自動更新。'),
+      el('div', { class: 'field' }, descI),
+      el('div', { class: 'btn-group' }, el('button', { type: 'button', class: 'primary', onclick: async () => {
+        const rr = await adminCall('adminUpdate', { patch: { description: descI.value.trim() } }, '公告已更新');
+        if (rr.ok) { descI.value = ev.description || ''; refreshDesc(); }
+      } }, '儲存公告'), descStamp), descPreview);
+    refreshDesc();
 
     // ---- 設定表單 ----
     const f = {};
@@ -496,24 +620,44 @@
       el('div', { class: 'card' }, el('div', { class: 'row', style: 'justify-content:space-between;align-items:center' }, el('h2', { class: 'grow-0', style: 'margin:0' }, '大家的空檔'), el('div', { class: 'grow-0 btn-group' }, modeSeg, finalBtns)),
         el('p', { class: 'muted' }, '顏色越深代表越多人有空；格子上的數字是有空人數。★ 為定案時段。'),
         el('div', { class: 'split' }, el('div', null, gridHost, legend(heatLegend())), side)),
-      settingsCard, allowedCard, notifyCard);
+      descCard, settingsCard, allowedCard, notifyCard);
     renderGrid(); renderAllowed(); refreshFinalNotice();
   }
 
-  // ---------- 路由 ----------
+  // #endregion //
+
+
+
+
+  // #region // 路由 Route ( 單頁應用 SPA )
+
   function route() {
+
     const h = location.hash || '#/new';
     let m;
     if ((m = h.match(/^#\/e\/([A-Za-z0-9_-]+)\/admin\/?$/))) return viewAdmin(m[1]);
     if ((m = h.match(/^#\/e\/([A-Za-z0-9_-]+)\/?$/))) return viewEvent(m[1]);
+
     return viewNew();
+
   }
+
+  // #endregion //
+
+
+  // #region // 啟動 Boot
+
   async function boot() {
+    
     document.getElementById('siteName').textContent = CFG.SITE_NAME || '約時間'; document.title = CFG.SITE_NAME || '約時間';
     if (CFG.BACKEND === 'local') document.getElementById('demoBadge').classList.remove('hidden');
     if (CFG.REPO_URL) document.getElementById('repoLink').href = CFG.REPO_URL;
     try { const r = await fetch('holidays-tw.json', { cache: 'no-cache' }); const j = await r.json(); delete j._comment; HOLIDAYS = j; } catch (e) { console.warn('無法載入假日表', e); }
     window.addEventListener('hashchange', route); route();
   }
+
   boot();
+
+  // #endregion //
+
 })();
