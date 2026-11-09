@@ -271,7 +271,7 @@ const HANDLERS = {
   // 建立活動
   createEvent: function (d) {
     const err = validateEvent_(d); if (err) return fail_(err);
-    if (!d.password || d.password.length < 4) return fail_('密碼需要超過 4 個字元');
+    if (!d.password || d.password.length < 4) return fail_('密碼至少需要 4 個字元');
     // 生成 ID
     const existing = readAll_(EVENT_SHEET, EVENT_COLS).map(r => String(r.id));
     let id; do { id = randId_(10); } while (existing.indexOf(id) >= 0);
@@ -296,7 +296,7 @@ const HANDLERS = {
     const ev = findEvent_(d.id); if (!ev) return fail_('找不到這個活動');
     const name = String(d.name || '').trim();
     if (!name) return fail_('請輸入姓名或單位'); if (name.length > 40) return fail_('名稱太長');
-    if (!d.password || d.password.length < 4) return fail_('密碼需要超過 4 個字元');
+    if (!d.password || d.password.length < 4) return fail_('密碼至少需要 4 個字元');
     if (listParticipants_(d.id).some(p => p.name === name)) return fail_('這個名稱已經有人用了；如果是你本人，請改用「修改我的選擇」登入');
     const salt = randId_(16);
     const p = { eventId: ev.id, name: name, email: String(d.email || '').trim(), salt: salt, pwHash: hashPw_(salt, d.password), slots: [], extraSlots: [], extraAt: '', createdAt: now_(), updatedAt: now_() };
@@ -358,7 +358,7 @@ const HANDLERS = {
     ev.description = String(ev.description || '').trim();
     if (ev.description !== oldDesc) ev.descriptionAt = ev.description ? now_() : '';
     ev.hourStart = Number(ev.hourStart); ev.hourEnd = Number(ev.hourEnd); ev.allowed = uniq_(ev.allowed); ev.extraOpen = !!ev.extraOpen;
-    if (patch.newPassword) { if (String(patch.newPassword).length < 4) return fail_('密碼需要超過 4 個字元'); ev.salt = randId_(16); ev.pwHash = hashPw_(ev.salt, patch.newPassword); }
+    if (patch.newPassword) { if (String(patch.newPassword).length < 4) return fail_('密碼至少需要 4 個字元'); ev.salt = randId_(16); ev.pwHash = hashPw_(ev.salt, patch.newPassword); }
     ev.updatedAt = now_();
     writeRow_(EVENT_SHEET, EVENT_COLS, ev._row, serializeEvent_(ev));
     // 縮小可選範圍時，移除填寫者範圍外的選擇 ( 含補選 )

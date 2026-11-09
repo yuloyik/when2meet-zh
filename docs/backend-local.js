@@ -161,7 +161,7 @@
     async createEvent(d) {
 
       const err = validateEventFields(d, false); if (err) return fail(err);
-      if (!d.password || d.password.length < 4) return fail('密碼需要超過 4 個字元');
+      if (!d.password || d.password.length < 4) return fail('密碼至少需要 4 個字元');
       if (d.notifyMode !== 'none' && !d.creatorEmail) return fail('填寫 email 可即時接收通知');
 
       // 生成 ID
@@ -206,7 +206,7 @@
       const name = (d.name || '').trim();
       if (!name) return fail('請輸入姓名或單位'); if (name.length > 40) return fail('名稱太長');
 
-      if (!d.password || d.password.length < 4) return fail('密碼需要超過 4 個字元');
+      if (!d.password || d.password.length < 4) return fail('密碼至少需要 4 個字元');
 
       const list = db.participants[d.id];
       if (list.some(p => p.name === name)) return fail('這個名稱已經有人用了；如果是你本人，請改用「修改我的選擇」登入');
@@ -308,7 +308,7 @@
       ev.extraOpen = !!ev.extraOpen;
 
 
-      if (patch.newPassword) { if (patch.newPassword.length < 4) return fail('密碼需要超過 4 個字元'); ev.salt = randId(16); ev.pwHash = await hashPw(ev.salt, patch.newPassword); }
+      if (patch.newPassword) { if (patch.newPassword.length < 4) return fail('密碼至少需要 4 個字元'); ev.salt = randId(16); ev.pwHash = await hashPw(ev.salt, patch.newPassword); }
       
       const allowed = new Set(ev.allowed);
       let stripped = 0;

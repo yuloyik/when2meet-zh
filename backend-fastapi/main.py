@@ -442,7 +442,7 @@ def h_create_event(con, d):
     if err:
         return fail(err)
     if len(str(d.get("password") or "")) < 4:
-        return fail("密碼需要超過 4 個字元")
+        return fail("密碼至少需要 4 個字元")
     # 生成 ID
     eid = rand_id(10)
     while find_event(con, eid):
@@ -483,7 +483,7 @@ def h_join_event(con, d):
     if len(name) > 40:
         return fail("名稱太長")
     if len(str(d.get("password") or "")) < 4:
-        return fail("密碼需要超過 4 個字元")
+        return fail("密碼至少需要 4 個字元")
     if any(p["name"] == name for p in list_parts(con, ev["id"])):
         return fail("這個名稱已經有人用了；如果是你本人，請改用「修改我的選擇」登入")
     salt = rand_id(16)
@@ -584,7 +584,7 @@ def h_admin_update(con, d):
     ev["extraOpen"] = bool(ev.get("extraOpen"))
     if patch.get("newPassword"):
         if len(str(patch["newPassword"])) < 4:
-            return fail("密碼需要超過 4 個字元")
+            return fail("密碼至少需要 4 個字元")
         ev["salt"] = rand_id(16)
         ev["pwHash"] = hash_pw(ev["salt"], patch["newPassword"])
     ev["updatedAt"] = now()
